@@ -6,7 +6,7 @@
 [![Commit activity](https://img.shields.io/github/commit-activity/m/gurusha01/air-agent)](https://img.shields.io/github/commit-activity/m/gurusha01/air-agent)
 [![License](https://img.shields.io/github/license/gurusha01/air-agent)](https://img.shields.io/github/license/gurusha01/air-agent)
 
-Something Something AI Research Agents
+You need two repos for it 1. MLGym 2. VeRL. first clone them, they are already added in pyproject.toml so no need to install them as such. 
 
 - **Github repository**: <https://github.com/gurusha01/air-agent/>
 - **Documentation** <https://gurusha01.github.io/air-agent/>
