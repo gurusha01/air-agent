@@ -1,0 +1,68 @@
+# MLGym Orchestrator Configuration for Prime-RL
+#
+# This config sets up the orchestrator to collect rollouts from MLGym environments
+# and send training batches to the prime-rl trainer.
+
+# Output directory for checkpoints, rollouts, and logs
+output_dir = "outputs/mlgym_run"
+
+# Training configuration
+batch_size = 16
+rollouts_per_example = 4
+seq_len = 4096
+max_steps = 100
+
+# Async configuration
+max_async_level = 1
+max_off_policy_steps = 4
+
+# Model configuration
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+trust_remote_code = true
+
+# Client configuration (vLLM server)
+[client]
+base_url = ["http://localhost:8000/v1"]
+api_key_var = "OPENAI_API_KEY"
+
+# Sampling configuration
+[sampling]
+temperature = 1.0
+max_tokens = 512
+min_tokens = 1
+
+# Environment configuration (MLGym)
+# Note: This uses the custom MLGym environment loader
+[[env]]
+id = "mlgym"
+name = "battleOfSexes"
+
+[env.args]
+task = "battleOfSexes"
+task_config_path = "${MLGYM_CONFIG_ROOT}/tasks/battleOfSexes.yaml"
+agent_config_path = "${MLGYM_CONFIG_ROOT}/agents/default.yaml"
+max_steps = 50
+container_type = "docker"
+
+# Buffer configuration
+[buffer]
+seed = 42
+
+# Checkpoint configuration
+[ckpt]
+interval = 10
+keep_last = 5
+
+# Logging
+[log]
+level = "info"
+file = true
+
+# Weight broadcast (filesystem for simplicity)
+[weight_broadcast]
+type = "filesystem"
+
+# Rollout transport
+[rollout_transport]
+type = "filesystem"

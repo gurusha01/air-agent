@@ -1,0 +1,74 @@
+# MLGym Trainer Configuration for Prime-RL
+#
+# This config sets up the RL trainer to train on rollouts collected from MLGym.
+
+# Output directory (must match orchestrator)
+output_dir = "outputs/mlgym_run"
+
+# Training configuration
+max_steps = 100
+max_async_level = 1
+
+# Model configuration
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+seq_len = 4096
+trust_remote_code = true
+
+# Use LoRA for efficient training
+[model.lora]
+rank = 16
+alpha = 32
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+# Tokenizer
+[tokenizer]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+trust_remote_code = true
+
+# Data loader
+[data]
+# fake = false  # Set to use real data from orchestrator
+
+# Loss configuration
+[loss]
+ratio_type = "token"
+token_mask_high = 8.0
+token_mask_low = 0.125
+adv_tau = 1.0
+
+# Optimizer configuration
+[optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.01
+betas = [0.9, 0.999]
+max_norm = 1.0
+
+# Learning rate scheduler
+[scheduler]
+type = "constant"
+
+# Checkpoint configuration
+[ckpt]
+interval = 10
+keep_last = 5
+
+[ckpt.weights]
+interval = 10
+keep_last = 3
+
+# Logging
+[log]
+level = "info"
+file = true
+
+# Weight broadcast
+[weight_broadcast]
+type = "filesystem"
+save_sharded = true
+save_format = "safetensors"
+
+# Rollout transport
+[rollout_transport]
+type = "filesystem"
