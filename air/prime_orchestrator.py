@@ -136,11 +136,13 @@ class MLGymOrchestrator:
         for idx in problem_indices:
             example = dataset[idx]
             for _ in range(self.rollouts_per_example):
-                all_inputs.append(RolloutInput(
-                    prompt=example["prompt"],
-                    task=example["task"],
-                    example_id=example["example_id"],
-                ))
+                all_inputs.append(
+                    RolloutInput(
+                        prompt=example["prompt"],
+                        task=example["task"],
+                        example_id=example["example_id"],
+                    )
+                )
 
         # Run rollouts
         logger.info(f"Running {len(all_inputs)} rollouts...")
@@ -197,7 +199,7 @@ class MLGymOrchestrator:
         """
         advantages = []
         for i in range(0, len(rewards), group_size):
-            group_rewards = rewards[i:i + group_size]
+            group_rewards = rewards[i : i + group_size]
             mean_reward = sum(group_rewards) / len(group_rewards)
             std_reward = (sum((r - mean_reward) ** 2 for r in group_rewards) / len(group_rewards)) ** 0.5
             std_reward = max(std_reward, 1e-8)  # Prevent division by zero
@@ -243,8 +245,8 @@ class MLGymOrchestrator:
 
             # Truncate to max length
             if len(input_ids) > self.seq_len:
-                input_ids = input_ids[:self.seq_len]
-                loss_mask = loss_mask[:self.seq_len]
+                input_ids = input_ids[: self.seq_len]
+                loss_mask = loss_mask[: self.seq_len]
 
             examples.append({
                 "input_ids": input_ids,
@@ -281,6 +283,7 @@ class MLGymOrchestrator:
         output_file = self.output_dir / "rollouts" / f"step_{step:06d}.json"
 
         import json
+
         with open(output_file, "w") as f:
             json.dump(rollouts, f, indent=2, default=str)
 
@@ -310,12 +313,12 @@ class MLGymOrchestrator:
         ])
 
         # Compute solve rates
-        solve_all = df.groupby("example_id").apply(
-            lambda x: x.reward.sum() == self.rollouts_per_example, include_groups=False
-        ).mean()
-        solve_none = df.groupby("example_id").apply(
-            lambda x: x.reward.sum() == 0, include_groups=False
-        ).mean()
+        solve_all = (
+            df.groupby("example_id")
+            .apply(lambda x: x.reward.sum() == self.rollouts_per_example, include_groups=False)
+            .mean()
+        )
+        solve_none = df.groupby("example_id").apply(lambda x: x.reward.sum() == 0, include_groups=False).mean()
 
         return {
             "reward/mean": df.reward.mean(),
@@ -381,9 +384,9 @@ async def run_orchestrator(
     )
 
     for step in range(num_steps):
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"Step {step + 1}/{num_steps}")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
 
         # Generate rollouts
         rollouts = await orchestrator.generate_batch(step=step)
@@ -416,14 +419,16 @@ def main():
 
     args = parser.parse_args()
 
-    asyncio.run(run_orchestrator(
-        task=args.task,
-        model_name=args.model,
-        base_url=args.base_url,
-        num_steps=args.num_steps,
-        batch_size=args.batch_size,
-        output_dir=args.output_dir,
-    ))
+    asyncio.run(
+        run_orchestrator(
+            task=args.task,
+            model_name=args.model,
+            base_url=args.base_url,
+            num_steps=args.num_steps,
+            batch_size=args.batch_size,
+            output_dir=args.output_dir,
+        ),
+    )
 
 
 if __name__ == "__main__":

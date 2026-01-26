@@ -4,7 +4,7 @@ This module provides a verifiers-compatible Environment class that wraps MLGym t
 allowing them to be used with prime-rl's training infrastructure.
 """
 
-from __future__ import annotations
+from __future__ import annotations, print_function
 
 import asyncio
 import json
@@ -169,13 +169,11 @@ class MLGymEnvironment:
     def _create_initial_prompt(self, example_id: int = 0) -> list[dict[str, str]]:
         """Create the initial prompt for an episode."""
         system_template = self.agent_config.get(
-            "system_template",
-            "You are an ML research agent. Complete the given task by executing commands."
+            "system_template", "You are an ML research agent. Complete the given task by executing commands."
         )
 
         task_template = self.agent_config.get(
-            "task_template",
-            "Task: {task_description}\n\nYou can execute bash commands to complete this task."
+            "task_template", "Task: {task_description}\n\nYou can execute bash commands to complete this task."
         )
 
         # Load task description from config
@@ -183,9 +181,13 @@ class MLGymEnvironment:
             task_config = yaml.safe_load(f)
         task_description = task_config.get("description", f"Complete the {self.task} task.")
 
+        # (Current Step: {current_step}, Remaining Steps: {remaining_steps})
+        # (Open file: {open_file})
+        # (Current directory: {working_dir})
+
         return [
             {"role": "system", "content": system_template},
-            {"role": "user", "content": task_template.format(task_description=task_description)},
+            {"role": "user", "content": task_template.replace("{description}", task_description)},
         ]
 
     async def run_group(
@@ -236,6 +238,8 @@ class MLGymEnvironment:
             # Create the gymnasium environment
             env = gym.make(f"mlgym/{self.task}", devices=self.devices).unwrapped
 
+            assert env.container is not None
+
             # Reset environment
             obs_dict, info = env.reset()
             observation = obs_dict.get("observation", "")
@@ -275,11 +279,13 @@ class MLGymEnvironment:
                 full_completion += completion_text + "\n"
 
                 # Record trajectory step
-                trajectory.append(TrajectoryStep(
-                    prompt=messages.copy(),
-                    completion=completion_text,
-                    tokens=self._extract_tokens(response) if hasattr(response, "usage") else None,
-                ))
+                trajectory.append(
+                    TrajectoryStep(
+                        prompt=messages.copy(),
+                        completion=completion_text,
+                        tokens=self._extract_tokens(response) if hasattr(response, "usage") else None,
+                    )
+                )
 
                 # Parse action from completion
                 action = self._parse_action(completion_text)
@@ -309,6 +315,7 @@ class MLGymEnvironment:
             env.close()
 
         except Exception as e:
+            print(e)
             error = e
             reward = 0.0
 
