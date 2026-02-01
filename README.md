@@ -8,4 +8,40 @@
 
 You need two repos for it 1. MLGym 2. VeRL. first clone them, they are already added in pyproject.toml so no need to install them as such. The main code is in `air` directory
 
-[mkdnlink]: ./docs/setup.md
+## Setup
+
+Clone MLGym and prime-rl repos:
+```sh
+git clone https://github.com/facebookresearch/MLGym ../MLGym &
+git clone https://github.com/PrimeIntellect-ai/prime-rl ../prime-rl
+```
+
+The project structure should look like this
+```
+root/
+├── air-agent/    (this repo)
+├── MLGym/        (clone from https://github.com/facebookresearch/MLGym)
+└── prime-rl/     (clone from https://github.com/PrimeIntellect-ai/prime-rl)
+```
+
+Install dependencies
+```sh 
+uv sync
+```
+
+Pull the MLGym docker image
+```sh
+docker pull aigym/mlgym-agent:latest
+```
+
+Copy over the data folder from MLGym repo
+```sh 
+mkdir data && cp -r ./../MLGym/data/* ./data
+```
+
+
+Setup .env for this repo and don't forget to edit the .env file to include the api key.
+```sh
+echo -e "MLGYM_CONFIG_ROOT=\"./../MLGym/configs\"\nMLGYM_WORKSPACE_PATH=\"./../MLGym/workspace\"\n\nOPENAI_API_KEY=\"<api-key>\"" > .env
+```
+
