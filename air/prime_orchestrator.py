@@ -314,7 +314,8 @@ class MLGymOrchestrator:
 
         # Compute solve rates
         solve_all = (
-            df.groupby("example_id")
+            df
+            .groupby("example_id")
             .apply(lambda x: x.reward.sum() == self.rollouts_per_example, include_groups=False)
             .mean()
         )
@@ -359,13 +360,12 @@ async def run_orchestrator(
         **kwargs: Additional arguments
     """
     # Set up paths
-    mlgym_config_root = os.environ.get("MLGYM_CONFIG_ROOT", "/data4/parth/MLGym/configs")
+    mlgym_config_root = Path(os.environ.get("MLGYM_CONFIG_ROOT", "./../MLGym/configs")).resolve()
 
     if task_config_path is None:
-        task_config_path = f"{mlgym_config_root}/tasks/{task}.yaml"
-
+        task_config_path = (mlgym_config_root / "tasks" / f"{task}.yaml").as_posix()
     if agent_config_path is None:
-        agent_config_path = f"{mlgym_config_root}/agents/default.yaml"
+        agent_config_path = (mlgym_config_root / "agents" / "default.yaml").as_posix()
 
     logger.info(f"Starting MLGym orchestrator for task: {task}")
     logger.info(f"Model: {model_name}")
