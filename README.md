@@ -44,4 +44,19 @@ Setup .env for this repo and don't forget to edit the .env file to include the a
 ```sh
 echo -e "MLGYM_CONFIG_ROOT=\"./../MLGym/configs\"\nMLGYM_WORKSPACE_PATH=\"./../MLGym/workspace\"\n\nOPENAI_API_KEY=\"<api-key>\"" > .env
 ```
-
+## Testing
+Run both commands on seperate shell to test the orchestrator directly without the full prime-rl distributed setup.
+```sh
+uv run vllm serve Qwen/Qwen3-4B-Instruct-2507 \
+    --host 0.0.0.0 --port 8000 \
+    --max-model-len 8192 --trust-remote-code
+```
+Wait for the vLLM server finish booting and run:
+```
+uv run python -m air.prime_orchestrator \
+    --task battleOfSexes \
+    --model Qwen/Qwen3-4B-Instruct-2507 \
+    --num-steps 10 \
+    --batch-size 16 \
+    --output-dir outputs/standalone_run
+```
