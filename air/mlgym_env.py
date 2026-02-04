@@ -97,7 +97,7 @@ class MLGymEnvironment:
         self.max_steps = max_steps
         self.seed = seed
         self.verbose = verbose
-        self.devices = devices or ["cuda:0"]
+        self.devices = devices or ["all"]
 
         # Load agent config for prompt templates
         self.agent_config = self._load_agent_config()
@@ -315,7 +315,6 @@ class MLGymEnvironment:
             env.close()
 
         except Exception as e:
-            print(e)
             error = e
             reward = 0.0
 
@@ -403,13 +402,13 @@ def load_environment(
     import os
 
     # Default paths based on environment variables or common locations
-    mlgym_config_root = os.environ.get("MLGYM_CONFIG_ROOT", "/home/ubuntu/MLScientist/MLGym/configs")
+    mlgym_config_root = Path(os.environ.get("MLGYM_CONFIG_ROOT", "./../MLGym/configs")).resolve()
 
     if task_config_path is None:
-        task_config_path = f"{mlgym_config_root}/tasks/{task}.yaml"
+        task_config_path = (mlgym_config_root / "tasks" / f"{task}.yaml").as_posix()
 
     if agent_config_path is None:
-        agent_config_path = f"{mlgym_config_root}/agents/default.yaml"
+        agent_config_path = (mlgym_config_root / "agents" / "default.yaml").as_posix()
 
     return MLGymEnvironment(
         task=task,

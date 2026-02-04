@@ -406,8 +406,9 @@ async def run_orchestrator(
 
 
 def main():
-    """Main entry point."""
     import argparse
+
+    """Main entry point."""
 
     parser = argparse.ArgumentParser(description="MLGym Prime-RL Orchestrator")
     parser.add_argument("--task", default="battleOfSexes", help="MLGym task name")
