@@ -20,7 +20,7 @@ The project structure should look like this
 ```
 root/
 ├── air-agent/    (this repo)
-├── MLGym/        (clone from https://github.com/facebookresearch/MLGym)
+├── MLGym/        (clone from https://github.com/ken-tummada/MLGym-air-agent)
 └── prime-rl/     (clone from https://github.com/PrimeIntellect-ai/prime-rl)
 ```
 
