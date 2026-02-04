@@ -10,9 +10,9 @@ You need two repos for it 1. MLGym 2. VeRL. first clone them, they are already a
 
 ## Setup
 
-Clone MLGym and prime-rl repos:
+Clone a fork of MLGym and prime-rl repos:
 ```sh
-git clone https://github.com/facebookresearch/MLGym ../MLGym &
+git clone https://github.com/ken-tummada/MLGym-air-agent.git ../MLGym &
 git clone https://github.com/PrimeIntellect-ai/prime-rl ../prime-rl
 ```
 
