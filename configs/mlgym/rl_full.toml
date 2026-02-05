@@ -1,0 +1,98 @@
+# MLGym Full Training Config - Experiment 1.1
+#
+# Multi-task training with larger batch size and longer exploration.
+#
+# Run with:
+#   cd /home/ubuntu/MLScientist/MLGym
+#   source /home/ubuntu/MLScientist/air-agent/.venv/bin/activate
+#   uv run --project /home/ubuntu/MLScientist/air-agent rl @ /home/ubuntu/MLScientist/air-agent/configs/mlgym/rl_full.toml
+
+# GPU allocation:
+# - GPU 0: vLLM inference server
+# - GPU 1: SKIP (often occupied)
+# - GPUs 2-6: FSDP trainer (5 GPUs)
+# - GPU 7: MLGym Docker container (environment ML training)
+inference_gpu_ids = [0]
+trainer_gpu_ids = [2, 3, 4, 5, 6]
+
+# Training duration
+# 4 tasks × 10 examples = 40 examples
+# batch_size=32, rollouts_per_example=8 → 4 examples per step
+# 1 epoch = 40/4 = 10 steps
+# 20 epochs = 200 steps
+max_steps = 200
+seq_len = 8192
+
+[ckpt]
+interval = 20
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "mlgym-rl"
+name = "exp1.1-full-multi-task"
+
+# ═══════════════════════════════════════════════════════════════
+# TRAINER CONFIG
+# ═══════════════════════════════════════════════════════════════
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1  # Activation checkpointing every layer (memory optimization)
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+
+[trainer.optim]
+lr = 1e-5
+
+# ═══════════════════════════════════════════════════════════════
+# ORCHESTRATOR CONFIG
+# ═══════════════════════════════════════════════════════════════
+[orchestrator]
+batch_size = 32                     # Trajectories per training step
+rollouts_per_example = 8            # 8 rollouts per prompt
+trajectory_strategy = "branching"
+workers_per_env = 2                 # 2 parallel workers for stability
+
+[orchestrator.log]
+env_worker_logs = true
+level = "INFO"
+
+[orchestrator.sampling]
+max_tokens = 2048
+temperature = 0.8
+
+# Multi-task configuration
+# Task 1: Titanic (tabular classification)
+[[orchestrator.env]]
+id = "air_mlgym"
+name = "titanic"
+args = { task_configs = ["titanic.yaml"], max_turns = 50, num_examples_per_task = 10, env_gpu = "7", save_trajectories = true, trajectory_dir = "outputs/trajectories_exp1.1" }
+
+# Task 2: Prisoners Dilemma (game theory)
+[[orchestrator.env]]
+id = "air_mlgym"
+name = "prisonersDilemma"
+args = { task_configs = ["prisonersDilemma.yaml"], max_turns = 50, num_examples_per_task = 10, env_gpu = "7", save_trajectories = true, trajectory_dir = "outputs/trajectories_exp1.1" }
+
+# Task 3: Fashion MNIST (image classification)
+[[orchestrator.env]]
+id = "air_mlgym"
+name = "imageClassificationFMnist"
+args = { task_configs = ["imageClassificationFMnist.yaml"], max_turns = 50, num_examples_per_task = 10, env_gpu = "7", save_trajectories = true, trajectory_dir = "outputs/trajectories_exp1.1" }
+
+# Task 4: House Price Regression
+[[orchestrator.env]]
+id = "air_mlgym"
+name = "regressionKaggleHousePrice"
+args = { task_configs = ["regressionKaggleHousePrice.yaml"], max_turns = 50, num_examples_per_task = 10, env_gpu = "7", save_trajectories = true, trajectory_dir = "outputs/trajectories_exp1.1" }
+
+# ═══════════════════════════════════════════════════════════════
+# INFERENCE CONFIG
+# ═══════════════════════════════════════════════════════════════
+[inference.model]
+max_model_len = 8192

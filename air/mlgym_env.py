@@ -1,418 +1,664 @@
-"""MLGym environment wrapper compatible with prime-rl's verifiers interface.
+"""
+MLGym Environment for prime-rl training.
 
-This module provides a verifiers-compatible Environment class that wraps MLGym tasks,
-allowing them to be used with prime-rl's training infrastructure.
+This module provides a verifiers-compatible environment that wraps MLGym tasks
+for multi-turn RL training with branching trajectory strategy.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import gymnasium as gym
-import yaml
 from datasets import Dataset
+from loguru import logger
+
+import verifiers as vf
+
+# Add MLGym to path - use absolute path to work in spawned subprocesses
+MLGYM_PATH = Path("/home/ubuntu/MLScientist/MLGym").resolve()
+if str(MLGYM_PATH) not in sys.path:
+    sys.path.insert(0, str(MLGYM_PATH))
+
+from mlgym.environment.env import EnvironmentArguments, MLGymEnv
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
 
 
 @dataclass
-class RolloutInput:
-    """Input for a single rollout."""
+class TaskMetrics:
+    """Tracks metrics for a task during an episode."""
 
-    prompt: list[dict[str, str]]  # Chat messages format
-    task: str
-    example_id: int
-    extra: dict = field(default_factory=dict)
-
-
-@dataclass
-class TrajectoryStep:
-    """A single step in the trajectory."""
-
-    prompt: list[dict[str, str]]
-    completion: str
-    tokens: dict | None = None
+    baseline_score: float = 0.0
+    current_score: float = 0.0
+    previous_score: float = 0.0
+    validation_scores: list[float] = field(default_factory=list)
+    validation_steps: list[int] = field(default_factory=list)
 
 
-@dataclass
-class State:
-    """State of a rollout, compatible with prime-rl's expected format."""
+def normalize_task_config_path(task_config: str) -> str:
+    """
+    Normalize task config path to be relative to MLGym/configs/.
 
-    example_id: int
-    task: str
-    prompt: list[dict[str, str]]
-    completion: str
-    trajectory: list[TrajectoryStep]
-    reward: float
-    is_truncated: bool = False
-    error: Exception | None = None
-    timing: dict = field(default_factory=dict)
-    metrics: dict = field(default_factory=dict)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Dict-like access for compatibility."""
-        return getattr(self, key, default)
+    Examples:
+        "titanic.yaml" -> "tasks/titanic.yaml"
+        "tasks/titanic.yaml" -> "tasks/titanic.yaml"
+    """
+    if not task_config.startswith("tasks/"):
+        return f"tasks/{task_config}"
+    return task_config
 
 
-class MLGymEnvironment:
-    """Verifiers-compatible environment wrapper for MLGym tasks.
+def get_dataset_builder(
+    task_configs: list[str],
+    num_examples_per_task: int = 100,
+    seed: int = 42,
+):
+    """
+    Build dataset of MLGym task prompts.
 
-    This class adapts MLGym's gymnasium-based environments to work with
-    prime-rl's training infrastructure.
+    Args:
+        task_configs: List of task config YAML filenames (e.g., "titanic.yaml")
+                     Will be normalized to "tasks/titanic.yaml"
+        num_examples_per_task: Number of training examples per task
+        seed: Random seed for reproducibility
+
+    Returns:
+        Callable that builds the dataset
+    """
+    import random
+
+    def build() -> Dataset:
+        random.seed(seed)
+        data = []
+        example_id_counter = 0  # Unique ID for each example
+
+        for task_config in task_configs:
+            # Normalize path
+            task_config_normalized = normalize_task_config_path(task_config)
+            task_path = Path(task_config)
+            task_name = task_path.stem
+
+            # Load task config to get description and baseline
+            config_path = MLGYM_PATH / "configs" / task_config_normalized
+            if not config_path.exists():
+                logger.warning(f"Task config not found: {config_path}")
+                continue
+
+            import yaml
+
+            with open(config_path) as f:
+                task_yaml = yaml.safe_load(f)
+
+            task_description = task_yaml.get("description", f"Complete the {task_name} task.")
+            baseline_scores = task_yaml.get("baseline_scores", [{}])
+            baseline_info = baseline_scores[0] if baseline_scores else {}
+
+            # Format baseline info for prompt
+            baseline_str = ", ".join(f"{k}: {v}" for k, v in baseline_info.items()) if baseline_info else "Not available"
+
+            # Create multiple examples per task with different seeds
+            for i in range(num_examples_per_task):
+                example_seed = seed + i
+
+                system_prompt = """You are an ML research agent that outputs ONLY executable commands. No explanations, no thinking, just the command.
+
+AVAILABLE COMMANDS:
+- open <file> - View file contents
+- edit <start_line>:<end_line>
+<new_content>
+end_of_edit - Edit file lines
+- python <script.py> - Run a Python script
+- validate - Evaluate current solution and get score
+- submit - Submit final solution
+
+RULES:
+1. Output ONLY the command, nothing else
+2. No explanations, no comments, no thinking
+3. One command per response
+4. Use validate frequently to check progress
+
+STRATEGY:
+1. open files to explore
+2. Make incremental improvements
+3. validate after changes
+4. submit when done"""
+
+                user_prompt = f"""Task: {task_yaml.get('name', task_name)}
+
+{task_description}
+
+Baseline: {baseline_str}
+
+Output your first command (e.g., open train_and_predict.py):"""
+
+                data.append({
+                    "example_id": example_id_counter,  # Required by prime-rl buffer
+                    "prompt": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "task": task_name,
+                    "task_config": task_config_normalized,  # Use normalized path for MLGym
+                    "example_seed": example_seed,
+                    "info": {
+                        "task_name": task_name,
+                        "task_config": task_config_normalized,  # Use normalized path
+                        "baseline_scores": baseline_info,
+                        "task_description": task_description,
+                    },
+                })
+                example_id_counter += 1
+
+        random.shuffle(data)
+        return Dataset.from_list(data)
+
+    return build
+
+
+class MLGymEnvironment(vf.MultiTurnEnv):
+    """
+    MLGym environment compatible with verifiers/prime-rl.
+
+    This environment wraps MLGym tasks for multi-turn RL training.
+    It supports:
+    - Branching trajectory strategy (each turn = separate training sample)
+    - Delta improvement rewards at validate steps
+    - Multiple task configurations
     """
 
     def __init__(
         self,
-        task: str,
-        task_config_path: str | Path,
-        agent_config_path: str | Path,
+        dataset: Dataset,
+        rubric: vf.Rubric,
+        max_turns: int = 50,
+        env_gpu: str = "0",
         container_type: str = "docker",
-        max_steps: int = 50,
-        seed: int = 42,
-        verbose: bool = False,
-        devices: list[str] | None = None,
+        image_name: str = "aigym/mlgym-agent:latest",
+        training_timeout: int = 1800,
+        save_trajectories: bool = True,
+        trajectory_dir: str = "trajectories",
+        **kwargs,
     ):
-        """Initialize the MLGym environment wrapper.
+        """
+        Initialize MLGym environment.
 
         Args:
-            task: Name of the MLGym task (e.g., "battleOfSexes")
-            task_config_path: Path to the task configuration YAML
-            agent_config_path: Path to the agent configuration YAML
-            container_type: Container type for MLGym ("docker" or "local")
-            max_steps: Maximum number of steps per episode
-            seed: Random seed for reproducibility
-            verbose: Whether to enable verbose logging
-            devices: List of GPU devices to use
+            dataset: Dataset of task prompts
+            rubric: Scoring rubric for rewards
+            max_turns: Maximum turns per episode
+            env_gpu: GPU ID for MLGym container (ML training)
+            container_type: "docker" or "podman"
+            image_name: Docker image for MLGym
+            training_timeout: Timeout for training commands (seconds)
+            save_trajectories: Whether to save trajectories for visualization
+            trajectory_dir: Directory to save trajectories
         """
-        self.task = task
-        self.task_config_path = Path(task_config_path)
-        self.agent_config_path = Path(agent_config_path)
+        super().__init__(dataset=dataset, rubric=rubric, max_turns=max_turns, **kwargs)
+        self.env_gpu = env_gpu
         self.container_type = container_type
-        self.max_steps = max_steps
-        self.seed = seed
-        self.verbose = verbose
-        self.devices = devices or ["cuda:0"]
+        self.image_name = image_name
+        self.training_timeout = training_timeout
+        self.save_trajectories = save_trajectories
+        self.trajectory_dir = Path(trajectory_dir)
 
-        # Load agent config for prompt templates
-        self.agent_config = self._load_agent_config()
+        # Container management
+        self._envs: dict[str, MLGymEnv] = {}
+        self._metrics: dict[str, TaskMetrics] = {}
 
-        # Register the task with MLGym
-        self._register_task()
+        # Create trajectory directory
+        if save_trajectories:
+            self.trajectory_dir.mkdir(parents=True, exist_ok=True)
 
-        # Settings for prime-rl compatibility
-        self._max_seq_len = 8192
-        self._interleaved_rollouts = False
-        self._score_rollouts = True
-
-        # Environment names for multi-env support
-        self.env_names = [task]
-
-    def _load_agent_config(self) -> dict:
-        """Load the agent configuration YAML."""
-        with open(self.agent_config_path) as f:
-            return yaml.safe_load(f)
-
-    def _register_task(self) -> None:
-        """Register the MLGym task."""
-        from mlgym.environment.env import EnvironmentArguments
-        from mlgym.environment.registration import register_task
-
-        env_args = EnvironmentArguments(
-            task_config_path=self.task_config_path,
-            container_type=self.container_type,
-            max_steps=self.max_steps,
-            seed=self.seed,
-            verbose=self.verbose,
-        )
-        register_task(env_args)
-
-    def set_max_seq_len(self, max_seq_len: int) -> None:
-        """Set maximum sequence length for tokenization."""
-        self._max_seq_len = max_seq_len
-
-    def set_interleaved_rollouts(self, enabled: bool) -> None:
-        """Enable/disable interleaved rollout mode."""
-        self._interleaved_rollouts = enabled
-
-    def set_score_rollouts(self, enabled: bool) -> None:
-        """Enable/disable scoring of rollouts."""
-        self._score_rollouts = enabled
-
-    def get_dataset(self, seed: int | None = None) -> Dataset:
-        """Get the training dataset for this environment.
-
-        For MLGym, we create a synthetic dataset of task prompts since
-        MLGym environments don't have a predefined dataset of inputs.
-        """
-        # Create prompts for the task
-        examples = []
-        for i in range(100):  # Generate 100 example prompts
-            prompt = self._create_initial_prompt(example_id=i)
-            examples.append({
-                "prompt": prompt,
-                "task": self.task,
-                "example_id": i,
-            })
-
-        return Dataset.from_list(examples)
-
-    def get_eval_dataset(self, seed: int | None = None) -> Dataset:
-        """Get the evaluation dataset."""
-        return self.get_dataset(seed=seed)
-
-    def _create_initial_prompt(self, example_id: int = 0) -> list[dict[str, str]]:
-        """Create the initial prompt for an episode."""
-        system_template = self.agent_config.get(
-            "system_template",
-            "You are an ML research agent. Complete the given task by executing commands."
-        )
-
-        task_template = self.agent_config.get(
-            "task_template",
-            "Task: {task_description}\n\nYou can execute bash commands to complete this task."
-        )
-
-        # Load task description from config
-        with open(self.task_config_path) as f:
-            task_config = yaml.safe_load(f)
-        task_description = task_config.get("description", f"Complete the {self.task} task.")
-
-        return [
-            {"role": "system", "content": system_template},
-            {"role": "user", "content": task_template.format(task_description=task_description)},
-        ]
-
-    async def run_group(
-        self,
-        group_inputs: list[RolloutInput],
-        client: AsyncOpenAI,
-        model: str,
-        gen_sampling_args: dict,
-        gen_sem: asyncio.Semaphore | None = None,
-        score_sem: asyncio.Semaphore | None = None,
-    ) -> list[State]:
-        """Run rollouts for a group of inputs.
-
-        This is the main interface expected by prime-rl's orchestrator.
-        """
-        tasks = [
-            self._run_single_rollout(
-                rollout_input=inp,
-                client=client,
-                model=model,
-                sampling_args=gen_sampling_args,
-                semaphore=gen_sem,
-            )
-            for inp in group_inputs
-        ]
-        return await asyncio.gather(*tasks)
-
-    async def _run_single_rollout(
-        self,
-        rollout_input: RolloutInput,
-        client: AsyncOpenAI,
-        model: str,
-        sampling_args: dict,
-        semaphore: asyncio.Semaphore | None = None,
-    ) -> State:
-        """Run a single rollout in the MLGym environment."""
-        start_time = time.perf_counter()
-        generation_ms = 0
-        scoring_ms = 0
-
-        trajectory: list[TrajectoryStep] = []
-        error: Exception | None = None
-        reward = 0.0
-        is_truncated = False
-        full_completion = ""
-
+    def _is_container_alive(self, env: MLGymEnv) -> bool:
+        """Check if the container is still running."""
         try:
-            # Create the gymnasium environment
-            env = gym.make(f"mlgym/{self.task}", devices=self.devices).unwrapped
-
-            # Reset environment
-            obs_dict, info = env.reset()
-            observation = obs_dict.get("observation", "")
-
-            # Build conversation history
-            messages = list(rollout_input.prompt)
-            messages.append({
-                "role": "user",
-                "content": f"OBSERVATION:\n{observation}\n\nRespond with THOUGHT: <your reasoning> and ACTION: <command to execute>",
-            })
-
-            done = False
-            step_count = 0
-
-            while not done and step_count < self.max_steps:
-                # Generate action from LLM
-                gen_start = time.perf_counter()
-
-                if semaphore:
-                    async with semaphore:
-                        response = await client.chat.completions.create(
-                            model=model,
-                            messages=messages,
-                            **sampling_args,
-                        )
-                else:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        **sampling_args,
-                    )
-
-                generation_ms += (time.perf_counter() - gen_start) * 1000
-
-                # Extract completion
-                completion_text = response.choices[0].message.content or ""
-                full_completion += completion_text + "\n"
-
-                # Record trajectory step
-                trajectory.append(TrajectoryStep(
-                    prompt=messages.copy(),
-                    completion=completion_text,
-                    tokens=self._extract_tokens(response) if hasattr(response, "usage") else None,
-                ))
-
-                # Parse action from completion
-                action = self._parse_action(completion_text)
-
-                # Execute action in environment
-                obs_dict, env_reward, terminated, truncated, info = env.step(action)
-                observation = obs_dict.get("observation", "")
-                done = terminated or truncated
-                is_truncated = truncated
-
-                # Update messages for next turn
-                messages.append({"role": "assistant", "content": completion_text})
-                if not done:
-                    messages.append({
-                        "role": "user",
-                        "content": f"OBSERVATION:\n{observation}\n\nContinue with THOUGHT and ACTION.",
-                    })
-
-                step_count += 1
-
-            # Get final reward
-            if self._score_rollouts:
-                score_start = time.perf_counter()
-                reward = self._get_trajectory_reward(env)
-                scoring_ms = (time.perf_counter() - score_start) * 1000
-
-            env.close()
-
+            if env.container_obj is None:
+                return False
+            # Refresh container status from Docker
+            import docker
+            client = docker.from_env()
+            container = client.containers.get(env.container_obj.id)
+            return container.status == "running"
         except Exception as e:
-            error = e
-            reward = 0.0
+            logger.debug(f"Container check failed: {e}")
+            return False
 
-        total_time = time.perf_counter() - start_time
+    def _create_new_env(self, task_config: str) -> MLGymEnv:
+        """Create a new MLGym environment."""
+        import os
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(MLGYM_PATH)
+            logger.debug(f"Changed to MLGym directory: {MLGYM_PATH}")
 
-        return State(
-            example_id=rollout_input.example_id,
-            task=rollout_input.task,
-            prompt=rollout_input.prompt,
-            completion=full_completion,
-            trajectory=trajectory,
-            reward=reward,
-            is_truncated=is_truncated,
-            error=error,
-            timing={
-                "generation_ms": generation_ms,
-                "scoring_ms": scoring_ms,
-                "total_ms": total_time * 1000,
-            },
-            metrics={
-                "num_steps": len(trajectory),
-            },
-        )
+            env_args = EnvironmentArguments(
+                image_name=self.image_name,
+                max_steps=self.max_turns * 2,  # Some buffer
+                task_config_path=task_config,
+                container_type=self.container_type,
+                verbose=False,
+            )
+            env = MLGymEnv(
+                args=env_args,
+                devices=[self.env_gpu],
+            )
+            env.reset()
+            return env
+        finally:
+            os.chdir(original_cwd)
 
-    def _parse_action(self, text: str) -> str:
-        """Extract action command from LLM output."""
-        if "ACTION:" in text:
-            action = text.split("ACTION:")[1].split("\n")[0].strip()
-            return action
-        # Fallback: return the entire text
+    def _get_or_create_env(self, state: vf.State) -> MLGymEnv:
+        """
+        Get or create MLGym environment for a task.
+
+        Container reuse strategy:
+        - Each task_config gets its own container (reused across episodes)
+        - Container is reset() between episodes, not recreated
+        - If container is dead, recreate it
+        """
+        import os
+        task_config = state.get("info", {}).get("task_config", "tasks/titanic.yaml")
+        example_id = state.get("example_id", "default")
+        logger.debug(f"[DEBUG] _get_or_create_env called (pid={os.getpid()}), task={task_config}, example={example_id}")
+
+        # Use task_config as container key (not example_id) for container reuse
+        container_key = task_config
+
+        # Check if we have an existing container and if it's still alive
+        if container_key in self._envs:
+            env = self._envs[container_key]
+            if not self._is_container_alive(env):
+                logger.warning(f"Container for {task_config} is dead, recreating...")
+                try:
+                    env.close()
+                except Exception:
+                    pass
+                del self._envs[container_key]
+
+        if container_key not in self._envs:
+            logger.info(f"Creating new container for task: {task_config}")
+            env = self._create_new_env(task_config)
+            self._envs[container_key] = env
+        else:
+            # Reuse existing container, but reset for new episode
+            env = self._envs[container_key]
+            # Only reset if this is a new example (not continuation of same episode)
+            if example_id not in self._metrics:
+                logger.debug(f"Resetting container for new episode: {example_id}")
+                try:
+                    # WORKAROUND: Change to home directory before reset to avoid
+                    # "pip folder not found" error. The reset() does rm -rf on
+                    # the workspace which is the shell's cwd, breaking pip.
+                    env.communicate("cd /home/agent")
+                    env.reset()
+                except RuntimeError as e:
+                    # Container died during reset, recreate it
+                    logger.warning(f"Reset failed, recreating container: {e}")
+                    try:
+                        env.close()
+                    except Exception:
+                        pass
+                    env = self._create_new_env(task_config)
+                    self._envs[container_key] = env
+
+        # Initialize metrics for this example if new
+        if example_id not in self._metrics:
+            baseline_scores = state.get("info", {}).get("baseline_scores", {})
+            baseline_value = list(baseline_scores.values())[0] if baseline_scores else 0.0
+            self._metrics[example_id] = TaskMetrics(
+                baseline_score=baseline_value,
+                previous_score=baseline_value,
+                current_score=baseline_value,
+            )
+
+        return env
+
+    def _cleanup_env(self, example_id: str) -> None:
+        """
+        Clean up after episode ends.
+
+        Note: We don't close the Docker container here because containers
+        are shared across episodes (keyed by task_config). We only clean up
+        the metrics for this specific example_id.
+        """
+        # Only clean up metrics, not containers (containers are reused)
+        if example_id in self._metrics:
+            del self._metrics[example_id]
+
+    def close_all_containers(self) -> None:
+        """Close all Docker containers. Call this at the end of training."""
+        for task_config, env in list(self._envs.items()):
+            try:
+                logger.info(f"Closing container for task: {task_config}")
+                env.close()
+            except Exception as e:
+                logger.warning(f"Error closing container for {task_config}: {e}")
+        self._envs.clear()
+        self._metrics.clear()
+
+    def _extract_command(self, raw_output: str) -> str:
+        """
+        Extract executable command from model output.
+
+        Handles:
+        - Qwen3 thinking tags: <think>...</think>
+        - Code blocks: ```command```
+        - Extra explanatory text before/after commands
+        """
+        import re
+
+        text = raw_output.strip()
+
+        # Remove Qwen3 thinking tags
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+
+        # Remove code block markers
+        text = re.sub(r'```[a-z]*\n?', '', text)
+        text = text.replace('```', '')
+
+        # Look for known command patterns
+        lines = text.strip().split('\n')
+        command_patterns = [
+            r'^(open\s+\S+)',
+            r'^(edit\s+\d+:\d+)',
+            r'^(python\s+\S+)',
+            r'^(validate)\s*$',
+            r'^(submit)\s*$',
+            r'^(exit_forfeit)\s*$',
+            r'^(skip)\s*$',
+        ]
+
+        for line in lines:
+            line = line.strip()
+            for pattern in command_patterns:
+                match = re.match(pattern, line, re.IGNORECASE)
+                if match:
+                    # Found a command, return the rest of the text starting from this line
+                    # This handles multi-line edit commands
+                    idx = text.find(line)
+                    if idx >= 0:
+                        return text[idx:].strip()
+
+        # If no known command found, return cleaned text as-is
+        # (might be an edit command or something else)
         return text.strip()
 
-    def _extract_tokens(self, response: Any) -> dict | None:
-        """Extract token information from OpenAI response."""
-        if hasattr(response, "usage") and response.usage:
-            return {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            }
-        return None
+    @vf.stop
+    async def check_done(self, state: vf.State) -> bool:
+        """Check if episode should end."""
+        if not state.get("trajectory"):
+            return False
 
-    def _get_trajectory_reward(self, env: Any) -> float:
-        """Get reward from MLGym evaluation."""
-        try:
-            # Trigger evaluation if available
-            if hasattr(env, "task") and env.task:
-                env.task.evaluate()
+        # Get last assistant response - completion is a LIST of messages, not a string!
+        last_step = state["trajectory"][-1]
+        completion = last_step.get("completion", [])
 
-            # Look for results.json in workspace
-            workspace_path = Path(env.task_workspace) if hasattr(env, "task_workspace") else None
-            if workspace_path:
-                results_file = workspace_path / "results.json"
-                if results_file.exists():
-                    results = json.loads(results_file.read_text())
-                    agent_score = results.get("agent", [])
-                    if agent_score and isinstance(agent_score, list):
-                        return float(agent_score[0].get("Score", 0.0))
-        except Exception as e:
-            print(f"Warning: Could not get reward: {e}")
+        # Extract the last assistant message content
+        last_response = ""
+        if completion:
+            assistant_msgs = [m for m in completion if m.get("role") == "assistant"]
+            if assistant_msgs:
+                last_response = assistant_msgs[-1].get("content", "")
 
-        return 0.0
+        # Check for submit action
+        if "<<SUBMISSION||" in last_response or "submit" in last_response.lower().split()[-1:]:
+            return True
+
+        # Check for exit conditions
+        exit_keywords = ["exit_forfeit", "exit_context", "exit_cost", "exit_error"]
+        if any(kw in last_response.lower() for kw in exit_keywords):
+            return True
+
+        # Check max turns
+        return len(state["trajectory"]) >= self.max_turns
+
+    async def env_response(
+        self,
+        messages: vf.Messages,
+        state: vf.State,
+        **kwargs,
+    ) -> vf.Messages:
+        """
+        Execute agent action in MLGym container and return observation.
+
+        This is where the actual MLGym interaction happens.
+        """
+        import os
+        logger.info(f"[DEBUG] env_response called (pid={os.getpid()}), num_messages={len(messages)}")
+
+        # Get the last assistant message (agent's action)
+        assistant_msgs = [m for m in messages if m["role"] == "assistant"]
+        if not assistant_msgs:
+            logger.info(f"[DEBUG] No assistant messages, returning early")
+            return [{"role": "user", "content": "Please provide an action."}]
+
+        raw_action = assistant_msgs[-1]["content"]
+        example_id = state.get("example_id", "default")
+
+        # Extract command from model output (handle thinking tags, explanations, etc.)
+        action = self._extract_command(raw_action)
+        logger.info(f"[DEBUG] Processing action for example_id={example_id}, action={action[:100]}...")
+
+        max_retries = 2
+        task_config = state.get("info", {}).get("task_config", "tasks/titanic.yaml")
+
+        for attempt in range(max_retries):
+            try:
+                # Get or create environment
+                logger.info(f"[DEBUG] Getting or creating env (attempt {attempt + 1})...")
+                env = self._get_or_create_env(state)
+                logger.info(f"[DEBUG] Got env, calling step()...")
+
+                # Execute action in MLGym
+                observation, reward, done, info = env.step(action)
+                logger.info(f"[DEBUG] step() returned: done={done}, obs_len={len(observation) if observation else 0}")
+
+                # Track validation scores for delta rewards
+                if info.get("score"):
+                    metrics = self._metrics.get(example_id)
+                    if metrics:
+                        # Get the score value (handle dict format)
+                        score_data = info["score"][-1] if info.get("score") else {}
+                        score_value = list(score_data.values())[0] if isinstance(score_data, dict) else score_data
+
+                        metrics.previous_score = metrics.current_score
+                        metrics.current_score = score_value
+                        metrics.validation_scores.append(score_value)
+                        metrics.validation_steps.append(len(state.get("trajectory", [])))
+
+                        # Store delta reward in state for the rubric to use
+                        delta_reward = score_value - metrics.previous_score
+                        state["last_delta_reward"] = delta_reward
+                        state["last_validation_score"] = score_value
+                        state["baseline_score"] = metrics.baseline_score
+
+                # Handle episode end
+                if done:
+                    self._save_trajectory(state, info)
+                    self._cleanup_env(example_id)
+
+                return [{"role": "user", "content": observation or "Action executed."}]
+
+            except RuntimeError as e:
+                if "Failed to communicate with container" in str(e) and attempt < max_retries - 1:
+                    logger.warning(f"Container communication failed, forcing recreation (attempt {attempt + 1})")
+                    # Force container recreation by removing from cache
+                    if task_config in self._envs:
+                        try:
+                            self._envs[task_config].close()
+                        except Exception:
+                            pass
+                        del self._envs[task_config]
+                    continue
+                else:
+                    logger.exception(f"Error executing action: {e}")
+                    return [{"role": "user", "content": f"Error: {e}"}]
+            except Exception as e:
+                logger.exception(f"Error executing action: {e}")
+                return [{"role": "user", "content": f"Error: {e}"}]
+
+        return [{"role": "user", "content": "Error: Max retries exceeded"}]
+
+    def _save_trajectory(self, state: vf.State, info: dict) -> None:
+        """Save trajectory for visualization."""
+        if not self.save_trajectories:
+            return
+
+        example_id = state.get("example_id", "default")
+        task_name = state.get("info", {}).get("task_name", "unknown")
+        metrics = self._metrics.get(example_id, TaskMetrics())
+
+        trajectory_data = {
+            "task": task_name,
+            "example_id": example_id,
+            "trajectory": state.get("trajectory", []),
+            "metrics": {
+                "baseline_score": metrics.baseline_score,
+                "final_score": metrics.current_score,
+                "improvement": metrics.current_score - metrics.baseline_score,
+                "validation_history": list(zip(metrics.validation_steps, metrics.validation_scores)),
+            },
+            "info": info,
+            "timestamp": time.strftime("%Y%m%d_%H%M%S"),
+        }
+
+        # Save to file
+        filename = f"{task_name}_{example_id}_{trajectory_data['timestamp']}.json"
+        filepath = self.trajectory_dir / filename
+        with open(filepath, "w") as f:
+            json.dump(trajectory_data, f, indent=2, default=str)
+
+        logger.info(f"Saved trajectory to {filepath}")
+
+
+def compute_delta_reward(completion: list[dict], state: vf.State, **kwargs) -> float:
+    """
+    Compute reward as delta improvement since last validation.
+
+    This implements the delta improvement reward strategy:
+    reward = current_score - previous_score
+
+    If no validation has occurred yet, reward is 0.
+    """
+    # Get delta reward stored by env_response
+    delta_reward = state.get("last_delta_reward", 0.0)
+
+    # Normalize to reasonable range [-1, 1]
+    # Most ML tasks have scores in [0, 1] or similar ranges
+    # Delta is typically small, so we scale it up
+    normalized_reward = max(-1.0, min(1.0, delta_reward * 5))
+
+    return normalized_reward
+
+
+def compute_final_improvement_reward(completion: list[dict], state: vf.State, **kwargs) -> float:
+    """
+    Compute reward as total improvement over baseline.
+
+    This can be used as an additional reward signal at episode end.
+    """
+    final_score = state.get("last_validation_score", 0.0)
+    baseline_score = state.get("baseline_score", 0.0)
+
+    improvement = final_score - baseline_score
+    return max(-1.0, min(1.0, improvement * 5))
 
 
 def load_environment(
-    task: str = "battleOfSexes",
-    task_config_path: str | None = None,
-    agent_config_path: str | None = None,
+    task_configs: list[str] | None = None,
+    max_turns: int = 50,
+    num_examples_per_task: int = 100,
+    env_gpu: str = "0",
+    container_type: str = "docker",
+    image_name: str = "aigym/mlgym-agent:latest",
+    training_timeout: int = 1800,
+    save_trajectories: bool = True,
+    trajectory_dir: str = "trajectories",
+    seed: int = 42,
     **kwargs,
-) -> MLGymEnvironment:
-    """Load an MLGym environment (verifiers-compatible interface).
-
-    This function provides the standard verifiers `load_environment` interface
-    for loading MLGym environments.
+) -> vf.Environment:
+    """
+    Load MLGym environment for prime-rl training.
 
     Args:
-        task: Name of the MLGym task
-        task_config_path: Path to task config (defaults to MLGym config location)
-        agent_config_path: Path to agent config (defaults to MLGym config location)
-        **kwargs: Additional arguments passed to MLGymEnvironment
+        task_configs: List of task config YAML filenames (e.g., ["titanic.yaml", "prisonersDilemma.yaml"])
+        max_turns: Maximum turns per episode
+        num_examples_per_task: Number of training examples per task
+        env_gpu: GPU ID for MLGym container
+        container_type: "docker" or "podman"
+        image_name: Docker image for MLGym
+        training_timeout: Timeout for training commands
+        save_trajectories: Whether to save trajectories
+        trajectory_dir: Directory for trajectories
+        seed: Random seed
 
     Returns:
-        MLGymEnvironment instance
+        vf.Environment configured for MLGym tasks
     """
-    import os
+    import traceback as tb
 
-    # Default paths based on environment variables or common locations
-    mlgym_config_root = os.environ.get("MLGYM_CONFIG_ROOT", "/home/ubuntu/MLScientist/MLGym/configs")
+    _debug_log_path = "/tmp/air_mlgym_import.log"
 
-    if task_config_path is None:
-        task_config_path = f"{mlgym_config_root}/tasks/{task}.yaml"
+    try:
+        with open(_debug_log_path, "a") as f:
+            f.write(f"\nload_environment called (pid={os.getpid()})\n")
+            f.write(f"  task_configs={task_configs}\n")
+            f.write(f"  num_examples_per_task={num_examples_per_task}\n")
+            f.flush()
 
-    if agent_config_path is None:
-        agent_config_path = f"{mlgym_config_root}/agents/default.yaml"
+        if task_configs is None:
+            task_configs = ["titanic.yaml"]
 
-    return MLGymEnvironment(
-        task=task,
-        task_config_path=task_config_path,
-        agent_config_path=agent_config_path,
-        **kwargs,
+        # Build dataset
+        with open(_debug_log_path, "a") as f:
+            f.write("Building dataset...\n")
+            f.flush()
+
+        dataset_builder = get_dataset_builder(
+            task_configs=task_configs,
+            num_examples_per_task=num_examples_per_task,
+            seed=seed,
+        )
+        dataset = dataset_builder()
+
+        with open(_debug_log_path, "a") as f:
+            f.write(f"Dataset built: {len(dataset)} examples\n")
+            f.write(f"Dataset columns: {dataset.column_names}\n")
+            f.flush()
+
+        logger.info(f"Loaded {len(dataset)} examples from {len(task_configs)} tasks")
+
+    except Exception as e:
+        with open(_debug_log_path, "a") as f:
+            f.write(f"\nload_environment FAILED: {e}\n")
+            f.write(tb.format_exc())
+            f.flush()
+        raise
+
+    # Create rubric with delta reward
+    # Using delta reward as the main signal for credit assignment
+    rubric = vf.Rubric(
+        funcs=[compute_delta_reward],
+        weights=[1.0],
     )
 
-
-# Registry for environment discovery
-ENVIRONMENT_REGISTRY = {
-    "mlgym": load_environment,
-}
+    return MLGymEnvironment(
+        dataset=dataset,
+        rubric=rubric,
+        max_turns=max_turns,
+        env_gpu=env_gpu,
+        container_type=container_type,
+        image_name=image_name,
+        training_timeout=training_timeout,
+        save_trajectories=save_trajectories,
+        trajectory_dir=trajectory_dir,
+    )

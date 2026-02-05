@@ -1,0 +1,102 @@
+# MLGym Multi-Turn RL Training Config
+#
+# Training setup for AI research agents on MLGym tasks using prime-rl.
+# Uses branching trajectory strategy with delta improvement rewards.
+#
+# Run with:
+#   cd air-agent && uv run rl @ configs/mlgym/rl.toml
+#
+# GPU Allocation (8x A10G):
+#   - GPU 0: MLGym environment (ML training inside Docker)
+#   - GPU 1: vLLM inference server
+#   - GPUs 2-7: FSDP2 trainer (6 GPUs)
+
+max_steps = 200
+seq_len = 8192  # Long sequences for code/output
+
+[ckpt]
+interval = 20  # Checkpoint every 20 steps
+keep_last = 5
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "mlgym-rl"
+name = "mlgym-experiment-1"
+
+# ═══════════════════════════════════════════════════════════════
+# TRAINER CONFIG (runs on GPUs 2-7)
+# ═══════════════════════════════════════════════════════════════
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1  # Activation checkpointing every layer
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.01
+
+[trainer.loss]
+ratio_type = "token"
+adv_tau = 1.0  # Advantage scaling
+
+# ═══════════════════════════════════════════════════════════════
+# ORCHESTRATOR CONFIG
+# ═══════════════════════════════════════════════════════════════
+[orchestrator]
+batch_size = 64                     # 8 examples × 8 rollouts = 64 samples per step
+rollouts_per_example = 8            # 8 rollouts per task for GRPO baseline
+trajectory_strategy = "branching"   # Each turn = separate training sample
+workers_per_env = 1                 # One worker per environment
+
+[orchestrator.sampling]
+max_tokens = 2048  # Long responses for code editing
+temperature = 0.8  # Slightly lower for more consistent code
+
+[orchestrator.advantage]
+length_weighted_mean = false  # Simple mean for GRPO
+
+# ═══════════════════════════════════════════════════════════════
+# ENVIRONMENT CONFIG - Multiple easy tasks
+# ═══════════════════════════════════════════════════════════════
+
+# Task 1: Titanic survival prediction (tabular, fast)
+[[orchestrator.env]]
+id = "air_mlgym"
+name = "titanic"
+args = { task_configs = ["titanic.yaml"], max_turns = 30, num_examples_per_task = 50, env_gpu = "0", save_trajectories = true, trajectory_dir = "outputs/trajectories" }
+
+# Task 2: Prisoner's Dilemma (game theory, no GPU needed)
+[[orchestrator.env]]
+id = "air_mlgym"
+name = "prisoners-dilemma"
+args = { task_configs = ["prisonersDilemma.yaml"], max_turns = 30, num_examples_per_task = 50, env_gpu = "0", save_trajectories = true, trajectory_dir = "outputs/trajectories" }
+
+# Task 3: Fashion MNIST classification (simple vision)
+[[orchestrator.env]]
+id = "air_mlgym"
+name = "fashion-mnist"
+args = { task_configs = ["imageClassificationFMnist.yaml"], max_turns = 30, num_examples_per_task = 50, env_gpu = "0", save_trajectories = true, trajectory_dir = "outputs/trajectories" }
+
+# Buffer configuration
+[orchestrator.buffer]
+seed = 42
+# Equal sampling from all environments
+env_ratios = [0.34, 0.33, 0.33]
+
+# ═══════════════════════════════════════════════════════════════
+# INFERENCE CONFIG (runs on GPU 1)
+# ═══════════════════════════════════════════════════════════════
+[inference.model]
+max_model_len = 8192  # Match seq_len for long context
+
+[inference]
+enable_lora = true
+max_lora_rank = 64
+gpu_memory_utilization = 0.9

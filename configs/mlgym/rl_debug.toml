@@ -1,0 +1,73 @@
+# MLGym Debug Config - Single task, fewer resources
+#
+# Use this for testing the setup before running full training.
+#
+# Run with:
+#   cd air-agent && uv run rl @ configs/mlgym/rl_debug.toml
+
+# GPU allocation:
+# - GPU 0: vLLM inference server
+# - GPU 1: OCCUPIED - skip this GPU
+# - GPUs 2-6: FSDP trainer (5 GPUs)
+# - GPU 7: MLGym Docker container (environment ML training)
+inference_gpu_ids = [0]
+trainer_gpu_ids = [2, 3, 4, 5, 6]
+
+max_steps = 10
+seq_len = 4096
+
+[ckpt]
+interval = 5
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "mlgym-rl-debug"
+name = "debug-run"
+
+# ═══════════════════════════════════════════════════════════════
+# TRAINER CONFIG
+# ═══════════════════════════════════════════════════════════════
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+
+[trainer.optim]
+lr = 1e-5
+
+# ═══════════════════════════════════════════════════════════════
+# ORCHESTRATOR CONFIG
+# ═══════════════════════════════════════════════════════════════
+[orchestrator]
+batch_size = 8                      # Reduced for debugging
+rollouts_per_example = 4
+trajectory_strategy = "branching"
+workers_per_env = 2                 # 2 parallel workers for stability
+
+[orchestrator.log]
+env_worker_logs = true
+level = "DEBUG"
+
+[orchestrator.sampling]
+max_tokens = 1024
+temperature = 0.8
+
+# Single easy task for debugging
+# NOTE: name must match the task name in the dataset (filename stem of task config)
+[[orchestrator.env]]
+id = "air_mlgym"
+name = "titanic"
+args = { task_configs = ["titanic.yaml"], max_turns = 10, num_examples_per_task = 10, env_gpu = "7", save_trajectories = true, trajectory_dir = "outputs/trajectories_debug" }
+
+# ═══════════════════════════════════════════════════════════════
+# INFERENCE CONFIG
+# ═══════════════════════════════════════════════════════════════
+[inference.model]
+max_model_len = 4096
