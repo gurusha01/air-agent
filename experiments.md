@@ -13,23 +13,10 @@
 | Config File | `configs/mlgym/rl_debug.toml` |
 | Model | Qwen/Qwen3-4B-Instruct-2507 |
 | LoRA Rank | 16 |
-| LoRA Alpha | 32 |
-| Learning Rate | 1e-5 |
 | max_steps | 10 |
 | batch_size | 8 |
-| rollouts_per_example | 4 |
 | max_turns | 10 |
-| num_examples_per_task | 10 |
-| seq_len | 4096 |
 | Tasks | titanic only |
-
-### GPU Allocation
-
-| GPU | Usage |
-|-----|-------|
-| 0 | vLLM inference server |
-| 2-6 | FSDP trainer (5 GPUs) |
-| 7 | MLGym Docker container |
 
 ### Results
 
@@ -37,36 +24,21 @@
 |--------|-------|
 | Training Steps Completed | 10/10 |
 | Container Errors | 0 |
-| Checkpoints Saved | Steps 5, 10 |
-| Throughput | ~500-670 tokens/s |
-| Peak Memory | 6.7 GiB |
-| Total Time | ~25 minutes |
 | Loss | 0.0 (reward issue) |
 
-### Observations
+### Notes
 
-1. **Loss = 0.0**: Reward signal not flowing properly
-   - Root cause: Model doesn't call `validate` command frequently
-   - Reward only computed on validation score changes
-
-2. **Infrastructure Working**:
-   - Container stability fix verified (0 flake8 errors)
-   - Orchestrator-trainer communication working
-   - Trajectory saving working
-
-### Artifacts
-
-- Checkpoints: `outputs/checkpoints/step_5/`, `outputs/checkpoints/step_10/`
-- Trajectories: `outputs/trajectories_debug/`
-- W&B Project: mlgym-rl-debug
+- Infrastructure verified working
+- Container stability fix verified (cd before reset)
+- Reward signal was 0 because model didn't call `validate`
 
 ---
 
-## Experiment 1.1: Full Multi-Task Training
+## Experiment 1.1: Single Task with Tool Call Rewards
 
 **Date:** 2026-02-05
-**Goal:** Large-scale training across multiple MLGym tasks
-**Status:** Running
+**Goal:** Train with dense reward signal from tool call success/failure
+**Status:** Stopped (issues found, moved to Exp 1.2)
 
 ### Configuration
 
@@ -77,112 +49,284 @@
 | LoRA Rank | 16 |
 | LoRA Alpha | 32 |
 | Learning Rate | 1e-5 |
-| max_steps | 200 (~20 epochs) |
-| batch_size | 32 |
+| max_steps | 200 |
+| batch_size | 16 |
 | rollouts_per_example | 8 |
-| max_turns | 50 |
+| max_turns | 20 |
 | num_examples_per_task | 10 |
 | seq_len | 8192 |
-| Checkpoint Interval | 20 steps |
+| Tasks | titanic only |
 
-### Tasks (4 total)
+### Reward Function
 
-| Task | Type | Config |
-|------|------|--------|
-| titanic | Tabular Classification | titanic.yaml |
-| prisonersDilemma | Game Theory | prisonersDilemma.yaml |
-| imageClassificationFMnist | Image Classification | imageClassificationFMnist.yaml |
-| regressionKaggleHousePrice | Regression | regressionKaggleHousePrice.yaml |
+```
++0.5  for correct tool call (no error in observation)
+-0.5  for incorrect tool call (error/traceback in observation)
++10 × improvement  at final validate (episode end)
+```
+
+### Key Fixes Applied
+
+1. **MLGym commands loaded** - `open`, `edit`, `validate` now work in container
+2. **Environment variables set** - `WINDOW=100` fixes jq errors in `open` command
+3. **Updated prompt** - Tells model files are in `data/` directory
 
 ### Training Math
 
 ```
-Total examples = 4 tasks × 10 examples = 40 examples
-Examples per step = batch_size / rollouts_per_example = 32 / 8 = 4
-Steps per epoch = 40 / 4 = 10 steps
-Total epochs = 200 / 10 = 20 epochs
-```
-
-### GPU Allocation
-
-| GPU | Usage |
-|-----|-------|
-| 0 | vLLM inference server |
-| 2-6 | FSDP trainer (5 GPUs) |
-| 7 | MLGym Docker container |
-
-### Expected Runtime
-
-- ~2 hours per epoch (estimate based on debug run)
-- Total: ~40 hours for 20 epochs
-
-### Artifacts
-
-- Checkpoints: `outputs/checkpoints/step_20/`, `step_40/`, etc.
-- Trajectories: `outputs/trajectories_exp1.1/`
-- W&B Project: mlgym-rl
-- W&B Run Name: exp1.1-full-multi-task
-
-### Command
-
-```bash
-# Run in tmux session
-tmux new-session -d -s mlgym_training
-
-tmux send-keys -t mlgym_training "cd /home/ubuntu/MLScientist/MLGym && \
-source /home/ubuntu/MLScientist/air-agent/.venv/bin/activate && \
-uv run --project /home/ubuntu/MLScientist/air-agent rl @ \
-/home/ubuntu/MLScientist/air-agent/configs/mlgym/rl_full.toml 2>&1 | \
-tee /home/ubuntu/MLScientist/air-agent/outputs/exp1.1_training.log" Enter
+1 task × 10 examples = 10 examples
+batch_size=16, rollouts_per_example=8 → 2 examples per step
+1 epoch = 10/2 = 5 steps
+200 steps = 40 epochs
 ```
 
 ### Monitoring
 
 ```bash
-# Attach to tmux
-tmux attach -t mlgym_training
+# Trainer progress
+tail -f /home/ubuntu/MLScientist/MLGym/outputs/logs/trainer.stdout
 
-# Check trainer progress
-tail -f outputs/logs/trainer.stdout
+# Orchestrator
+tail -f /home/ubuntu/MLScientist/MLGym/outputs/logs/orchestrator.stdout
 
-# Check orchestrator
-tail -f outputs/logs/orchestrator.stdout
+# View trajectories
+cd /home/ubuntu/MLScientist/air-agent
+uv run python air/view_trajectory.py --latest --dir /home/ubuntu/MLScientist/MLGym/outputs/trajectories_exp1.1
 
-# Check W&B
-# https://wandb.ai/Gurusha-personal/mlgym-rl
+# Streamlit viewer
+uv run streamlit run air/compare_trajectories.py --server.port 8502
 ```
 
-### Results
+### W&B
 
-| Metric | Value |
-|--------|-------|
-| Training Steps Completed | TBD |
-| Final Loss | TBD |
-| Final Reward | TBD |
-| Total Time | TBD |
+- **Project:** mlgym-rl
+- **Run Name:** exp1.1-titanic-tool-reward
+- **URL:** https://wandb.ai/Gurusha-personal/mlgym-rl
 
-### Notes
+### Artifacts
 
-- Started: 2026-02-05 ~03:XX UTC
-- Running in tmux session: `mlgym_training`
+- Trajectories: `outputs/trajectories_exp1.1/`
+- Checkpoints: `outputs/checkpoints/`
+- Training log: `outputs/exp1.1_training.log`
 
 ---
 
-## Future Experiments
+## Experiment 1.2: Fixed Trajectory Saving + Longer Context
 
-### Experiment 2: Reward Signal Improvements (Planned)
+**Date:** 2026-02-05 to 2026-02-06
+**Goal:** Fix trajectory saving and context length issues from Exp 1.1
+**Status:** Superseded by Exp 1.3 (edit command bash syntax issue)
 
-**Goal:** Get non-zero rewards flowing through training
+### Configuration
 
-Options to explore:
-1. Episode-end rewards based on final validation score
-2. Add `validate` to required action sequence
-3. Dense rewards based on code quality metrics
+| Parameter | Value |
+|-----------|-------|
+| Config File | `configs/mlgym/rl_full.toml` |
+| Model | Qwen/Qwen3-4B-Instruct-2507 |
+| LoRA Rank | 16 |
+| LoRA Alpha | 32 |
+| Learning Rate | 1e-5 |
+| max_steps | 200 |
+| batch_size | 16 |
+| rollouts_per_example | 8 |
+| max_turns | 20 |
+| num_examples_per_task | 10 |
+| **seq_len** | **32768** (increased from 8192) |
+| **max_model_len** | **32768** (increased from 8192) |
+| Tasks | titanic only |
 
-### Experiment 3: Scaling Study (Planned)
+### Key Fixes Applied (vs Exp 1.1)
 
-**Goal:** Test larger models and longer training
+1. **Context length increased** - 8K → 32K tokens (Qwen3 supports 262K)
+2. **Trajectory saving fixed** - Now saves when max_turns reached via check_done()
+3. **validate/submit commands** - Added to command list + reload after reset
+4. **Policy step tracking** - Recorded at rollout START, not save time
 
-- Qwen3-8B model
-- 1000+ training steps
-- More tasks
+### Reward Function
+
+Same as Exp 1.1:
+```
++0.5  for correct tool call (no error in observation)
+-0.5  for incorrect tool call (error/traceback in observation)
++10 × improvement  at final validate (episode end)
+```
+
+### Monitoring
+
+```bash
+# Trainer progress
+tail -f /home/ubuntu/MLScientist/MLGym/outputs/logs/trainer.stdout
+
+# Orchestrator
+tail -f /home/ubuntu/MLScientist/MLGym/outputs/logs/orchestrator.stdout
+
+# View trajectories (terminal)
+cd /home/ubuntu/MLScientist/air-agent
+uv run python air/view_trajectory.py --latest --dir /home/ubuntu/MLScientist/MLGym/outputs/trajectories_exp1.2
+
+# Streamlit viewer (compare trajectories)
+uv run streamlit run air/compare_trajectories.py --server.port 8502
+```
+
+### W&B
+
+- **Project:** mlgym-rl
+- **Run Name:** exp1.2-titanic-0205
+- **Run URL:** https://wandb.ai/Gurusha-personal/mlgym-rl/runs/0hkse3pb
+
+### Artifacts
+
+- Trajectories: `outputs/trajectories_exp1.2/`
+- Checkpoints: `outputs/checkpoints/`
+
+### Notes
+
+- Peak VRAM: ~17.2 GiB (fits on 24GB A10G with 32K context)
+- Trajectory filenames now include policy version (π_N) to track which policy generated them
+
+---
+
+## Experiment 1.3: Heredoc File Writing (Bash Syntax Fix)
+
+**Date:** 2026-02-06
+**Goal:** Fix MLGym edit command bash syntax errors by using heredoc approach
+**Status:** Running
+
+### Configuration
+
+Same as Exp 1.2, with updated system prompt for heredoc file writing.
+
+| Parameter | Value |
+|-----------|-------|
+| Config File | `configs/mlgym/rl_full.toml` |
+| Model | Qwen/Qwen3-4B-Instruct-2507 |
+| max_steps | 200 |
+| batch_size | 16 |
+| rollouts_per_example | 8 |
+| max_turns | 20 |
+| seq_len | 32768 |
+| Tasks | titanic only |
+
+### Key Fixes Applied (vs Exp 1.2)
+
+1. **Heredoc file writing** - Changed from `create`/`edit` to `cat << 'ENDOFFILE' > file.py`
+   - MLGym's `_check_syntax()` runs `bash -n` on ALL input including Python code
+   - This caused bash syntax errors when editing Python files
+   - Heredoc approach bypasses this issue
+
+2. **Multi-command extraction** - Extract first command only instead of rejecting
+   - Model sometimes outputs multiple commands in one response
+   - Now extracts and executes first command, ignores trailing ones
+
+### System Prompt Changes
+
+```
+To write a Python file, use this EXACT format:
+cat << 'ENDOFFILE' > train_and_predict.py
+import pandas as pd
+# your code here
+ENDOFFILE
+```
+
+### Early Results (Before Full Training)
+
+- ~29% of trajectories achieving positive improvement over baseline
+- Mean improvement: 7.3% (when successful)
+- Max improvement: 9.09%
+- Step 0 completed, reward improved from -0.125 to +0.375 by step 1
+
+### W&B
+
+- **Project:** mlgym-rl
+- **Run Name:** exp1.3-titanic-0206
+- **Trajectories:** `outputs/trajectories_exp1.3/`
+
+---
+
+## Experiment Roadmap
+
+### Phase 1: Baselines (No Training)
+
+#### Exp 2.0: Zero-Shot Baseline
+**Goal:** Measure base model performance without any training
+- Run model on MLGym tasks with simple prompt
+- Record validation scores across tasks
+- Establishes lower bound for comparison
+
+#### Exp 2.1: Exploration Prompt Baseline
+**Goal:** Test if prompting alone improves exploration
+- Prompt model to explore diverse solutions
+- Instruct: "Don't stop until best gains are reached"
+- Compare to zero-shot baseline
+
+#### Exp 2.2: Exploration + Memory Baseline
+**Goal:** Test if logging past attempts helps
+- Same exploration prompt as 2.1
+- Add log of previously tried approaches to context
+- Model can see what didn't work and avoid repeating
+
+---
+
+### Phase 2: RL Training with Sparse Rewards
+
+#### Exp 3.0: GRPO/AIPO with Performance Delta
+**Goal:** Train with simple improvement-based rewards
+- Reward = (final_score - baseline_score)
+- Use GRPO or AIPO algorithm
+- Compare to prompting baselines
+
+---
+
+### Phase 3: Dense Rewards
+
+#### Exp 4.0: Step-wise Dense Rewards
+**Goal:** Provide feedback at every step, not just episode end
+- Current reward function: +0.5 correct tool, -0.5 error, +10×improvement
+- Include examples showing iterative improvement
+- Goal: prevent model from "giving up" early
+
+#### Exp 4.1: Dense Rewards + Diversity Bonus
+**Goal:** Encourage exploration of different strategies
+- Add diversity term to reward function
+- Reward novel actions/approaches
+- Penalize repetitive behavior
+
+#### Exp 4.2: Diversity + Memory + Dense Rewards
+**Goal:** Combine all improvements
+- Dense step-wise rewards
+- Diversity bonus for novel approaches
+- Log of past attempts in context
+
+---
+
+### Phase 4: MCTS-Based Methods
+
+#### Exp 5.0: MCTS Tree Search Inference
+**Goal:** Use MCTS for better action selection at inference time
+- Build search tree over possible actions
+- UCT for exploration-exploitation balance
+- Select best trajectory from tree
+
+#### Exp 5.1: MCTS + Diversity in UCT
+**Goal:** Inject diversity into tree search
+- Modify UCT formula to favor diverse branches
+- Diversity-aware exploration prompt
+- Compare to standard MCTS
+
+#### Exp 5.2: Train on MCTS Trajectories
+**Goal:** Distill MCTS search into the model
+- Generate high-quality trajectories using MCTS
+- Train model to imitate MCTS-selected actions
+- Goal: get MCTS-quality results without search overhead
+
+---
+
+## Success Metrics
+
+| Metric | Description |
+|--------|-------------|
+| Validation Score | Task-specific metric (accuracy, F1, etc.) |
+| Improvement over Baseline | Delta from zero-shot performance |
+| Sample Efficiency | Steps/trajectories needed to reach target |
+| Diversity | Unique strategies discovered across rollouts |
+| Consistency | Variance in final scores across runs |

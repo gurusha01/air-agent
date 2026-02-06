@@ -109,28 +109,36 @@ def get_dataset_builder(
             for i in range(num_examples_per_task):
                 example_seed = seed + i
 
-                system_prompt = """You are an ML research agent that outputs ONLY executable commands. No explanations, no thinking, just the command.
+                system_prompt = """You are an ML research agent. Output ONLY ONE command per response. No explanations.
 
-AVAILABLE COMMANDS:
-- open <file> - View file contents
-- edit <start_line>:<end_line>
-<new_content>
-end_of_edit - Edit file lines
-- python <script.py> - Run a Python script
-- validate - Evaluate current solution and get score
-- submit - Submit final solution
+To write a Python file, use this EXACT format:
+cat << 'ENDOFFILE' > train_and_predict.py
+import pandas as pd
+# your code here
+ENDOFFILE
 
-RULES:
-1. Output ONLY the command, nothing else
-2. No explanations, no comments, no thinking
-3. One command per response
-4. Use validate frequently to check progress
+COMMANDS:
+- cat << 'ENDOFFILE' > filename.py ... ENDOFFILE - Write a file
+- python <script.py> - Run Python script
+- validate - Check your solution score
+- ls, cat, head - View files
 
-STRATEGY:
-1. open files to explore
-2. Make incremental improvements
-3. validate after changes
-4. submit when done"""
+CRITICAL RULES:
+1. ONE command per response
+2. Use cat << 'ENDOFFILE' > file to write files
+3. After writing, run 'python train_and_predict.py'
+4. Then run 'validate' to check score
+
+WORKSPACE:
+- data/train.csv, data/test.csv - Input data
+- Output: submission.csv with PassengerId and Survived columns
+
+WORKFLOW:
+1. cat << 'ENDOFFILE' > train_and_predict.py
+<complete python script>
+ENDOFFILE
+2. python train_and_predict.py
+3. validate"""
 
                 user_prompt = f"""Task: {task_yaml.get('name', task_name)}
 
@@ -138,7 +146,7 @@ STRATEGY:
 
 Baseline: {baseline_str}
 
-Output your first command (e.g., open train_and_predict.py):"""
+Output your first command (start with: ls data/):"""
 
                 data.append({
                     "example_id": example_id_counter,  # Required by prime-rl buffer
@@ -203,6 +211,7 @@ class MLGymEnvironment(vf.MultiTurnEnv):
             trajectory_dir: Directory to save trajectories
         """
         super().__init__(dataset=dataset, rubric=rubric, max_turns=max_turns, **kwargs)
+        logger.info(f"[DEBUG] MLGymEnvironment initialized with self.max_turns={self.max_turns}")
         self.env_gpu = env_gpu
         self.container_type = container_type
         self.image_name = image_name
@@ -214,9 +223,54 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         self._envs: dict[str, MLGymEnv] = {}
         self._metrics: dict[str, TaskMetrics] = {}
 
+        # Policy version tracking (based on weight broadcasts)
+        self._last_known_step = 0
+        self._broadcasts_dir = Path("outputs/run_default/broadcasts")
+
         # Create trajectory directory
         if save_trajectories:
             self.trajectory_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_current_policy_step(self) -> int:
+        """
+        Get the current policy version by checking weight broadcast directories.
+
+        The trainer broadcasts weights to outputs/run_default/broadcasts/step_N/
+        after each training step. The highest N is the current policy version.
+
+        Returns:
+            Current policy step (0 = initial policy, 1 = after step 0 update, etc.)
+        """
+        try:
+            if not self._broadcasts_dir.exists():
+                return 0
+
+            step_dirs = [d for d in self._broadcasts_dir.iterdir()
+                        if d.is_dir() and d.name.startswith("step_")]
+
+            if not step_dirs:
+                return 0
+
+            # Extract step numbers and find max
+            steps = []
+            for d in step_dirs:
+                try:
+                    step_num = int(d.name.split("_")[1])
+                    steps.append(step_num)
+                except (IndexError, ValueError):
+                    continue
+
+            if steps:
+                current_step = max(steps)
+                if current_step != self._last_known_step:
+                    logger.info(f"[Policy] Detected new policy version: π_{current_step}")
+                    self._last_known_step = current_step
+                return current_step
+
+            return 0
+        except Exception as e:
+            logger.debug(f"Error getting policy step: {e}")
+            return self._last_known_step
 
     def _is_container_alive(self, env: MLGymEnv) -> bool:
         """Check if the container is still running."""
@@ -242,7 +296,10 @@ class MLGymEnvironment(vf.MultiTurnEnv):
 
             env_args = EnvironmentArguments(
                 image_name=self.image_name,
-                max_steps=self.max_turns * 2,  # Some buffer
+                # max_steps needs to account for parallel rollouts sharing the container
+                # With rollouts_per_example=8 and branching, the same container may receive
+                # many more step() calls than max_turns. Use generous buffer.
+                max_steps=self.max_turns * 20,
                 task_config_path=task_config,
                 container_type=self.container_type,
                 verbose=False,
@@ -252,9 +309,59 @@ class MLGymEnvironment(vf.MultiTurnEnv):
                 devices=[self.env_gpu],
             )
             env.reset()
+
+            # Load MLGym's custom commands (open, edit, validate, etc.)
+            self._load_commands(env)
+
             return env
         finally:
             os.chdir(original_cwd)
+
+    def _load_commands(self, env: MLGymEnv) -> None:
+        """Load MLGym's custom shell commands into the container."""
+        # Set required environment variables (from MLGym's default agent config)
+        env_vars = {
+            "WINDOW": "100",       # Lines to show in open command
+            "OVERLAP": "2",
+            "CURRENT_LINE": "0",
+            "CURRENT_FILE": "",
+            "SEARCH_RESULTS": "()",
+            "SEARCH_FILES": "()",
+            "SEARCH_INDEX": "0",
+        }
+        for var, value in env_vars.items():
+            env.communicate(f"export {var}={value}")
+
+        # Command files from MLGym's default agent config
+        command_files_paths = [
+            "tools/defaults.sh",      # open, goto, scroll, edit, create
+            "tools/search.sh",        # search, find_file
+            "tools/edit_linting.sh",  # edit with linting
+            "tools/validate.sh",      # validate - evaluate solution
+            "tools/submit.sh",        # submit - submit final solution
+        ]
+
+        command_files = []
+        for file_path in command_files_paths:
+            full_path = MLGYM_PATH / file_path
+            if not full_path.exists():
+                logger.warning(f"Command file not found: {full_path}")
+                continue
+
+            contents = full_path.read_text()
+            name = full_path.name
+
+            # Shell scripts are sourced
+            datum = {
+                "name": name,
+                "contents": contents,
+                "type": "source_file",
+            }
+            command_files.append(datum)
+
+        if command_files:
+            env.add_commands(command_files)
+            logger.info(f"Loaded {len(command_files)} command files into container")
 
     def _get_or_create_env(self, state: vf.State) -> MLGymEnv:
         """
@@ -300,6 +407,8 @@ class MLGymEnvironment(vf.MultiTurnEnv):
                     # the workspace which is the shell's cwd, breaking pip.
                     env.communicate("cd /home/agent")
                     env.reset()
+                    # Reload commands after reset (reset clears shell functions)
+                    self._load_commands(env)
                 except RuntimeError as e:
                     # Container died during reset, recreate it
                     logger.warning(f"Reset failed, recreating container: {e}")
@@ -345,14 +454,22 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         self._envs.clear()
         self._metrics.clear()
 
-    def _extract_command(self, raw_output: str) -> str:
+    def _extract_command(self, raw_output: str) -> tuple[str | None, bool]:
         """
-        Extract executable command from model output.
+        Extract the FIRST complete command from model output.
+
+        Returns:
+            Tuple of (command, is_multi_command)
+            - Returns (first_command, False) - always extracts first command
+            - is_multi_command is True if trailing commands were ignored (for logging)
+
+        Strategy: Extract and execute the first complete command, ignore the rest.
+        This allows edit commands to succeed even if model adds trailing commands.
 
         Handles:
         - Qwen3 thinking tags: <think>...</think>
         - Code blocks: ```command```
-        - Extra explanatory text before/after commands
+        - Edit commands (multi-line with end_of_edit)
         """
         import re
 
@@ -365,37 +482,104 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         text = re.sub(r'```[a-z]*\n?', '', text)
         text = text.replace('```', '')
 
-        # Look for known command patterns
-        lines = text.strip().split('\n')
-        command_patterns = [
-            r'^(open\s+\S+)',
-            r'^(edit\s+\d+:\d+)',
-            r'^(python\s+\S+)',
-            r'^(validate)\s*$',
-            r'^(submit)\s*$',
-            r'^(exit_forfeit)\s*$',
-            r'^(skip)\s*$',
-        ]
+        text = text.strip()
+        lines = text.split('\n')
 
+        # Command patterns
+        simple_command_pattern = r'^(open|python|validate|submit|exit_forfeit|skip|ls|head|tail|cd|create|goto|scroll|search|find_file)\b'
+        edit_pattern = r'^edit\s+\d+:\d+'
+        heredoc_pattern = r'^cat\s+<<\s*[\'"]?(\w+)[\'"]?\s*>\s*\S+'  # cat << 'EOF' > file
+
+        first_command = None
+        first_command_end_line = 0
+        has_trailing_commands = False
+
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+
+            # Check for heredoc command (cat << 'MARKER' > file)
+            heredoc_match = re.match(heredoc_pattern, line_stripped, re.IGNORECASE)
+            if heredoc_match:
+                if first_command is None:
+                    marker = heredoc_match.group(1)  # e.g., 'ENDOFFILE'
+                    heredoc_lines = [line_stripped]
+                    for j in range(i + 1, len(lines)):
+                        heredoc_lines.append(lines[j])
+                        if lines[j].strip() == marker:
+                            first_command = '\n'.join(heredoc_lines)
+                            first_command_end_line = j
+                            break
+                    else:
+                        # No end marker found, include everything
+                        first_command = '\n'.join(heredoc_lines)
+                        first_command_end_line = len(lines) - 1
+                    break
+                continue
+
+            # Check for edit command
+            if re.match(edit_pattern, line_stripped, re.IGNORECASE):
+                if first_command is None:
+                    # Find end_of_edit
+                    edit_lines = [line_stripped]
+                    for j in range(i + 1, len(lines)):
+                        line_content = lines[j]
+                        # Skip markdown code block markers (```python, ```, etc.)
+                        if line_content.strip().startswith('```'):
+                            continue
+                        edit_lines.append(line_content)
+                        if 'end_of_edit' in line_content.lower():
+                            first_command = '\n'.join(edit_lines)
+                            first_command_end_line = j
+                            break
+                    else:
+                        # No end_of_edit found
+                        first_command = '\n'.join(edit_lines)
+                        first_command_end_line = len(lines) - 1
+                    break  # Found first command, stop looking
+                continue
+
+            # Check for simple commands (note: 'cat' alone is not here, it's handled by heredoc)
+            if re.match(simple_command_pattern, line_stripped, re.IGNORECASE):
+                if first_command is None:
+                    first_command = line_stripped
+                    first_command_end_line = i
+                    break  # Found first command, stop looking
+
+        # Check for trailing commands after the first one (for logging only)
+        if first_command is not None:
+            for i in range(first_command_end_line + 1, len(lines)):
+                line_stripped = lines[i].strip()
+                if not line_stripped:
+                    continue
+                if re.match(simple_command_pattern, line_stripped, re.IGNORECASE):
+                    has_trailing_commands = True
+                    logger.warning(f"[TRAILING-CMD] Ignoring trailing command: {line_stripped[:50]}")
+                    break
+                elif re.match(edit_pattern, line_stripped, re.IGNORECASE):
+                    has_trailing_commands = True
+                    logger.warning(f"[TRAILING-CMD] Ignoring trailing edit command")
+                    break
+
+        # Return first command
+        if first_command:
+            return first_command, has_trailing_commands
+
+        # No known command found, return first non-empty line
         for line in lines:
-            line = line.strip()
-            for pattern in command_patterns:
-                match = re.match(pattern, line, re.IGNORECASE)
-                if match:
-                    # Found a command, return the rest of the text starting from this line
-                    # This handles multi-line edit commands
-                    idx = text.find(line)
-                    if idx >= 0:
-                        return text[idx:].strip()
+            if line.strip():
+                return line.strip(), False
 
-        # If no known command found, return cleaned text as-is
-        # (might be an edit command or something else)
-        return text.strip()
+        return text.strip(), False
 
     @vf.stop
     async def check_done(self, state: vf.State) -> bool:
         """Check if episode should end."""
+        traj_len = len(state.get("trajectory", []))
+
         if not state.get("trajectory"):
+            logger.debug(f"[check_done] No trajectory, returning False")
             return False
 
         # Get last assistant response - completion is a LIST of messages, not a string!
@@ -411,15 +595,68 @@ class MLGymEnvironment(vf.MultiTurnEnv):
 
         # Check for submit action
         if "<<SUBMISSION||" in last_response or "submit" in last_response.lower().split()[-1:]:
+            logger.info(f"[check_done] Submit detected, returning True (traj_len={traj_len})")
+            self._save_trajectory(state, {"exit_reason": "submit"})
             return True
 
         # Check for exit conditions
         exit_keywords = ["exit_forfeit", "exit_context", "exit_cost", "exit_error"]
         if any(kw in last_response.lower() for kw in exit_keywords):
+            logger.info(f"[check_done] Exit keyword detected, returning True (traj_len={traj_len})")
+            self._save_trajectory(state, {"exit_reason": "exit_keyword"})
             return True
 
         # Check max turns
-        return len(state["trajectory"]) >= self.max_turns
+        done = traj_len >= self.max_turns
+        if done:
+            logger.info(f"[check_done] max_turns reached, traj_len={traj_len}, max_turns={self.max_turns}")
+            self._save_trajectory(state, {"exit_reason": "max_turns"})
+        elif traj_len % 5 == 0:  # Log every 5 turns
+            logger.info(f"[check_done] traj_len={traj_len}, max_turns={self.max_turns}, done={done}")
+        return done
+
+    def _step_with_timeout(self, env: MLGymEnv, action: str, timeout: float = 60.0) -> tuple:
+        """
+        Execute step() with a timeout to prevent infinite hangs.
+
+        Args:
+            env: MLGym environment
+            action: Command to execute
+            timeout: Timeout in seconds (default 60s)
+
+        Returns:
+            Tuple of (observation, reward, done, info)
+
+        Raises:
+            TimeoutError: If step() takes longer than timeout
+        """
+        import concurrent.futures
+        import threading
+
+        result = [None]
+        exception = [None]
+
+        def run_step():
+            try:
+                result[0] = env.step(action)
+            except Exception as e:
+                exception[0] = e
+
+        thread = threading.Thread(target=run_step)
+        thread.start()
+        thread.join(timeout=timeout)
+
+        if thread.is_alive():
+            # Thread is still running after timeout - this is a hang
+            logger.warning(f"[TIMEOUT] step() timed out after {timeout}s for action: {action[:50]}...")
+            # We can't forcefully kill the thread, but we can mark this as an error
+            # The container may be in a bad state
+            raise TimeoutError(f"step() timed out after {timeout}s")
+
+        if exception[0]:
+            raise exception[0]
+
+        return result[0]
 
     async def env_response(
         self,
@@ -435,6 +672,12 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         import os
         logger.info(f"[DEBUG] env_response called (pid={os.getpid()}), num_messages={len(messages)}")
 
+        # Record policy step at rollout START (first env_response call for this example)
+        # This ensures we track which policy GENERATED the trajectory, not when it ended
+        if "_policy_step_at_start" not in state:
+            state["_policy_step_at_start"] = self._get_current_policy_step()
+            logger.info(f"[DEBUG] Rollout starting with policy π_{state['_policy_step_at_start']}")
+
         # Get the last assistant message (agent's action)
         assistant_msgs = [m for m in messages if m["role"] == "assistant"]
         if not assistant_msgs:
@@ -445,7 +688,18 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         example_id = state.get("example_id", "default")
 
         # Extract command from model output (handle thinking tags, explanations, etc.)
-        action = self._extract_command(raw_action)
+        action, has_trailing = self._extract_command(raw_action)
+
+        # Log if trailing commands were ignored (but don't reject)
+        if has_trailing:
+            logger.info(f"[TRAILING-CMD] Extracted first command, ignored trailing for example_id={example_id}")
+
+        # Reject empty/None action
+        if not action or not action.strip():
+            logger.warning(f"[EMPTY-CMD] Empty action for example_id={example_id}")
+            state["last_tool_success"] = False  # Triggers -0.5 reward
+            return [{"role": "user", "content": "Error: No command detected. Please output a valid command."}]
+
         logger.info(f"[DEBUG] Processing action for example_id={example_id}, action={action[:100]}...")
 
         max_retries = 2
@@ -458,8 +712,8 @@ class MLGymEnvironment(vf.MultiTurnEnv):
                 env = self._get_or_create_env(state)
                 logger.info(f"[DEBUG] Got env, calling step()...")
 
-                # Execute action in MLGym
-                observation, reward, done, info = env.step(action)
+                # Execute action in MLGym with timeout to prevent hangs
+                observation, reward, done, info = self._step_with_timeout(env, action, timeout=60.0)
                 logger.info(f"[DEBUG] step() returned: done={done}, obs_len={len(observation) if observation else 0}")
 
                 # Track validation scores for delta rewards
@@ -481,6 +735,18 @@ class MLGymEnvironment(vf.MultiTurnEnv):
                         state["last_validation_score"] = score_value
                         state["baseline_score"] = metrics.baseline_score
 
+                # Track tool call success for reward computation
+                # A successful tool call: no error in observation
+                is_error = observation and ("error" in observation.lower()[:100] or
+                                           "traceback" in observation.lower()[:200] or
+                                           "command not found" in observation.lower())
+                state["last_tool_success"] = not is_error
+
+                # Track if this was a validation call and episode is ending
+                is_validate = "validate" in action.lower()
+                state["last_action_was_validate"] = is_validate
+                state["episode_done"] = done
+
                 # Handle episode end
                 if done:
                     self._save_trajectory(state, info)
@@ -488,6 +754,19 @@ class MLGymEnvironment(vf.MultiTurnEnv):
 
                 return [{"role": "user", "content": observation or "Action executed."}]
 
+            except TimeoutError as e:
+                logger.warning(f"Step timed out, forcing container recreation (attempt {attempt + 1})")
+                # Container is likely in a bad state, force recreation
+                if task_config in self._envs:
+                    try:
+                        self._envs[task_config].close()
+                    except Exception:
+                        pass
+                    del self._envs[task_config]
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    return [{"role": "user", "content": f"Error: Command timed out after 60s"}]
             except RuntimeError as e:
                 if "Failed to communicate with container" in str(e) and attempt < max_retries - 1:
                     logger.warning(f"Container communication failed, forcing recreation (attempt {attempt + 1})")
@@ -513,51 +792,77 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         if not self.save_trajectories:
             return
 
+        # Prevent saving the same trajectory twice
+        if state.get("_trajectory_saved"):
+            logger.debug(f"[_save_trajectory] Already saved, skipping")
+            return
+        state["_trajectory_saved"] = True
+
         example_id = state.get("example_id", "default")
         task_name = state.get("info", {}).get("task_name", "unknown")
         metrics = self._metrics.get(example_id, TaskMetrics())
 
+        # Get policy version from rollout START (not current step)
+        # This ensures we track which policy GENERATED the trajectory
+        policy_step = state.get("_policy_step_at_start", self._get_current_policy_step())
+
+        # Compute improvement safely (handle None values)
+        improvement = None
+        if metrics.current_score is not None and metrics.baseline_score is not None:
+            improvement = metrics.current_score - metrics.baseline_score
+
         trajectory_data = {
             "task": task_name,
             "example_id": example_id,
+            "policy_step": policy_step,  # Which policy (π_N) generated this trajectory
             "trajectory": state.get("trajectory", []),
             "metrics": {
                 "baseline_score": metrics.baseline_score,
                 "final_score": metrics.current_score,
-                "improvement": metrics.current_score - metrics.baseline_score,
+                "improvement": improvement,
                 "validation_history": list(zip(metrics.validation_steps, metrics.validation_scores)),
             },
             "info": info,
             "timestamp": time.strftime("%Y%m%d_%H%M%S"),
         }
 
-        # Save to file
-        filename = f"{task_name}_{example_id}_{trajectory_data['timestamp']}.json"
+        # Save to file with policy step in filename: {task}_pi{step}_{timestamp}.json
+        filename = f"{task_name}_pi{policy_step}_{trajectory_data['timestamp']}.json"
         filepath = self.trajectory_dir / filename
         with open(filepath, "w") as f:
             json.dump(trajectory_data, f, indent=2, default=str)
 
-        logger.info(f"Saved trajectory to {filepath}")
+        logger.info(f"Saved trajectory to {filepath} (policy=π_{policy_step})")
 
 
 def compute_delta_reward(completion: list[dict], state: vf.State, **kwargs) -> float:
     """
-    Compute reward as delta improvement since last validation.
+    Compute reward based on tool call success and validation improvement.
 
-    This implements the delta improvement reward strategy:
-    reward = current_score - previous_score
-
-    If no validation has occurred yet, reward is 0.
+    Reward scheme:
+    - +0.5 for correct tool call (no error in observation)
+    - -0.5 for incorrect tool call (error/exception in observation)
+    - +10 * improvement at final validate (episode end)
     """
-    # Get delta reward stored by env_response
-    delta_reward = state.get("last_delta_reward", 0.0)
+    reward = 0.0
 
-    # Normalize to reasonable range [-1, 1]
-    # Most ML tasks have scores in [0, 1] or similar ranges
-    # Delta is typically small, so we scale it up
-    normalized_reward = max(-1.0, min(1.0, delta_reward * 5))
+    # Tool call success/failure reward
+    tool_success = state.get("last_tool_success", True)
+    if tool_success:
+        reward += 0.5
+    else:
+        reward -= 0.5
 
-    return normalized_reward
+    # Final validation improvement bonus (only at episode end)
+    episode_done = state.get("episode_done", False)
+    if episode_done:
+        final_score = state.get("last_validation_score", 0.0)
+        baseline_score = state.get("baseline_score", 0.0)
+        if final_score is not None and baseline_score is not None:
+            improvement = final_score - baseline_score
+            reward += 10.0 * improvement
+
+    return reward
 
 
 def compute_final_improvement_reward(completion: list[dict], state: vf.State, **kwargs) -> float:
@@ -636,6 +941,7 @@ def load_environment(
             f.flush()
 
         logger.info(f"Loaded {len(dataset)} examples from {len(task_configs)} tasks")
+        logger.info(f"[DEBUG] max_turns={max_turns} (passed to MLGymEnvironment)")
 
     except Exception as e:
         with open(_debug_log_path, "a") as f:
