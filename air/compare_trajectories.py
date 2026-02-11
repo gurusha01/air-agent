@@ -17,7 +17,7 @@ from pathlib import Path
 import streamlit as st
 
 # Default trajectory directory
-DEFAULT_DIR = "/home/ubuntu/MLScientist/MLGym/outputs/trajectories_exp1.3"
+DEFAULT_DIR = "/home/ubuntu/MLScientist/MLGym/outputs/trajectories_exp1.4"
 
 
 def load_trajectories(trajectory_dir: str) -> dict[str, dict]:

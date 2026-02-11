@@ -606,6 +606,72 @@ if re.match(heredoc_pattern, action, re.MULTILINE):
 
 ---
 
+### Issue 17: Episode-End Reward Never Fires
+
+**Symptom:**
+W&B `metric_improvement` always 0. Episode-end reward (+1/-0.2/-1) never applied despite `episode_done` check in reward function.
+
+**Root Cause:**
+`state["episode_done"]` is set in `env_response()` from MLGym's `done` flag (line 748):
+```python
+state["episode_done"] = done  # done from MLGym's step() return
+```
+But episodes end via `check_done()` returning True (max_turns reached), which did NOT set `episode_done`. MLGym only returns `done=True` when the agent calls `submit`, which basically never happened.
+
+**Impact:**
+This bug affected ALL experiments 1.1-1.4. The only active reward signal was per-step tool call penalty.
+
+**Solution:**
+Set `state["episode_done"] = True` in `check_done()` before returning True, on all 3 exit paths (submit, exit_keyword, max_turns). Also added `submit` instruction to system prompt so the model actually calls it.
+
+**File:** `air/mlgym_env.py`, `check_done()` method
+
+---
+
+### Issue 18: Zero-Variance Reward Kills GRPO Learning
+
+**Symptom:**
+Exp 1.5 completed 200 steps but model showed no improvement. Reward was -0.2688 at step 0 and -0.2000 at step 199.
+
+**Root Cause:**
+Threshold-based reward: 92% of trajectories got the exact same reward (-0.2, "mediocre improvement"). GRPO computes `advantage = reward - mean(batch)`. When all 16 trajectories in a batch get -0.2, advantages are all 0 → zero gradient → no learning. 26% of batches had literally zero gradient.
+
+**Solution:**
+Switched to continuous reward in [-1, 1]:
+```python
+improvement = final_score - baseline_score
+imp_reward = improvement * 5.0 - 0.5  # 0% → -0.5, 10% → 0.0, 20% → +0.5
+format_penalty = -(error_count / total_steps) * 0.5
+reward = clip(imp_reward + format_penalty, -1, 1)
+```
+This ensures every batch has non-zero variance → every step produces gradient.
+
+**Lesson:** For GRPO, reward variance within batches matters more than reward scale. Continuous rewards always produce gradient; threshold rewards often don't.
+
+**File:** `air/mlgym_env.py`, `compute_delta_reward()`
+
+---
+
+### Issue 19: Policy Collapse After ~100 Steps (Exp 1.6)
+
+**Symptom:**
+Model peaked at steps 80-100 (mean accuracy 0.890, max 0.986), then degraded to mean 0.852 by step 199. Sequence length dropped from 5500 → 1300 tokens, indicating the model learned to generate degenerate short responses.
+
+**Root Cause (suspected):**
+- Learning rate 1e-5 may be too high for 200 steps of GRPO
+- No KL penalty to anchor policy to the reference model
+- Model drifts too far from the base policy and collapses
+
+**Status:** Not yet fixed. Possible solutions:
+1. Lower learning rate (e.g., 5e-6 or 1e-6)
+2. Add KL penalty term to reward
+3. Use fewer training steps or early stopping
+4. Increase batch size for more stable gradient estimates
+
+**File:** `configs/mlgym/rl_full.toml`
+
+---
+
 ## Debugging Tips
 
 ### Enable Worker Logs

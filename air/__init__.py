@@ -7,7 +7,8 @@ reinforcement learning on MLGym environments with prime-rl.
 from air.mlgym_env import (
     MLGymEnvironment,
     compute_delta_reward,
-    compute_final_improvement_reward,
+    metric_final_accuracy,
+    metric_improvement,
     load_environment,
 )
 from air.wandb_logging import (
@@ -21,7 +22,8 @@ __all__ = [
     # Environment
     "MLGymEnvironment",
     "compute_delta_reward",
-    "compute_final_improvement_reward",
+    "metric_final_accuracy",
+    "metric_improvement",
     "load_environment",
     # W&B logging
     "init_wandb_run",

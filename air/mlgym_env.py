@@ -121,6 +121,7 @@ COMMANDS:
 - cat << 'ENDOFFILE' > filename.py ... ENDOFFILE - Write a file
 - python <script.py> - Run Python script
 - validate - Check your solution score
+- submit - Submit your final solution (use when you cannot improve further)
 - ls, cat, head - View files
 
 CRITICAL RULES:
@@ -128,6 +129,8 @@ CRITICAL RULES:
 2. Use cat << 'ENDOFFILE' > file to write files
 3. After writing, run 'python train_and_predict.py'
 4. Then run 'validate' to check score
+5. Try different models (RandomForest, XGBoost, LogisticRegression, SVM, etc.) and feature engineering approaches to maximize accuracy
+6. When you have tried multiple approaches and cannot improve further, run 'submit' to finalize
 
 WORKSPACE:
 - data/train.csv, data/test.csv - Input data
@@ -138,7 +141,9 @@ WORKFLOW:
 <complete python script>
 ENDOFFILE
 2. python train_and_predict.py
-3. validate"""
+3. validate
+4. Iterate: try different models, features, hyperparameters to improve score
+5. submit (when no more improvement is possible)"""
 
                 user_prompt = f"""Task: {task_yaml.get('name', task_name)}
 
@@ -596,6 +601,7 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         # Check for submit action
         if "<<SUBMISSION||" in last_response or "submit" in last_response.lower().split()[-1:]:
             logger.info(f"[check_done] Submit detected, returning True (traj_len={traj_len})")
+            state["episode_done"] = True
             self._save_trajectory(state, {"exit_reason": "submit"})
             return True
 
@@ -603,6 +609,7 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         exit_keywords = ["exit_forfeit", "exit_context", "exit_cost", "exit_error"]
         if any(kw in last_response.lower() for kw in exit_keywords):
             logger.info(f"[check_done] Exit keyword detected, returning True (traj_len={traj_len})")
+            state["episode_done"] = True
             self._save_trajectory(state, {"exit_reason": "exit_keyword"})
             return True
 
@@ -610,6 +617,7 @@ class MLGymEnvironment(vf.MultiTurnEnv):
         done = traj_len >= self.max_turns
         if done:
             logger.info(f"[check_done] max_turns reached, traj_len={traj_len}, max_turns={self.max_turns}")
+            state["episode_done"] = True
             self._save_trajectory(state, {"exit_reason": "max_turns"})
         elif traj_len % 5 == 0:  # Log every 5 turns
             logger.info(f"[check_done] traj_len={traj_len}, max_turns={self.max_turns}, done={done}")
@@ -741,6 +749,7 @@ class MLGymEnvironment(vf.MultiTurnEnv):
                                            "traceback" in observation.lower()[:200] or
                                            "command not found" in observation.lower())
                 state["last_tool_success"] = not is_error
+                state["error_count"] = state.get("error_count", 0) + (1 if is_error else 0)
 
                 # Track if this was a validation call and episode is ending
                 is_validate = "validate" in action.lower()
@@ -837,45 +846,56 @@ class MLGymEnvironment(vf.MultiTurnEnv):
 
 def compute_delta_reward(completion: list[dict], state: vf.State, **kwargs) -> float:
     """
-    Compute reward based on tool call success and validation improvement.
+    GRPO-style continuous reward in [-1, 1].
 
-    Reward scheme:
-    - +0.5 for correct tool call (no error in observation)
-    - -0.5 for incorrect tool call (error/exception in observation)
-    - +10 * improvement at final validate (episode end)
+    reward = improvement_reward + format_penalty
+
+    improvement_reward = improvement * 5 - 0.5  (linear, clipped)
+        0% improvement  → -0.5
+        10% improvement →  0.0
+        20% improvement → +0.5
+        30%+ improvement → +1.0
+
+    format_penalty = -(error_count / total_steps) * 0.5
+        0% errors → 0.0
+        100% errors → -0.5
+
+    No validation at all → -1.0 (complete failure)
     """
-    reward = 0.0
+    final_score = state.get("last_validation_score")
+    baseline_score = state.get("baseline_score", 0.0) or 0.0
+    error_count = state.get("error_count", 0)
+    total_steps = max(len(state.get("trajectory", [])), 1)
 
-    # Tool call success/failure reward
-    tool_success = state.get("last_tool_success", True)
-    if tool_success:
-        reward += 0.5
-    else:
-        reward -= 0.5
+    # Complete failure: never validated
+    if final_score is None or final_score == 0.0:
+        return -1.0
 
-    # Final validation improvement bonus (only at episode end)
-    episode_done = state.get("episode_done", False)
-    if episode_done:
-        final_score = state.get("last_validation_score", 0.0)
-        baseline_score = state.get("baseline_score", 0.0)
-        if final_score is not None and baseline_score is not None:
-            improvement = final_score - baseline_score
-            reward += 10.0 * improvement
-
-    return reward
-
-
-def compute_final_improvement_reward(completion: list[dict], state: vf.State, **kwargs) -> float:
-    """
-    Compute reward as total improvement over baseline.
-
-    This can be used as an additional reward signal at episode end.
-    """
-    final_score = state.get("last_validation_score", 0.0)
-    baseline_score = state.get("baseline_score", 0.0)
-
+    # Improvement reward: continuous, centered at 10% improvement
     improvement = final_score - baseline_score
-    return max(-1.0, min(1.0, improvement * 5))
+    imp_reward = improvement * 5.0 - 0.5
+
+    # Format penalty: proportional to error rate
+    format_penalty = -(error_count / total_steps) * 0.5
+
+    reward = imp_reward + format_penalty
+    return max(-1.0, min(1.0, reward))
+
+
+def metric_final_accuracy(completion: list[dict], state: vf.State, **kwargs) -> float:
+    """Metric-only: final accuracy score (logged to W&B, weight=0)."""
+    if state.get("episode_done", False):
+        return state.get("last_validation_score", 0.0) or 0.0
+    return 0.0
+
+
+def metric_improvement(completion: list[dict], state: vf.State, **kwargs) -> float:
+    """Metric-only: improvement over baseline (logged to W&B, weight=0)."""
+    if state.get("episode_done", False):
+        final = state.get("last_validation_score", 0.0) or 0.0
+        baseline = state.get("baseline_score", 0.0) or 0.0
+        return final - baseline
+    return 0.0
 
 
 def load_environment(
@@ -950,11 +970,10 @@ def load_environment(
             f.flush()
         raise
 
-    # Create rubric with delta reward
-    # Using delta reward as the main signal for credit assignment
+    # Create rubric with reward + metrics (weight=0 means logged but not rewarded)
     rubric = vf.Rubric(
-        funcs=[compute_delta_reward],
-        weights=[1.0],
+        funcs=[compute_delta_reward, metric_final_accuracy, metric_improvement],
+        weights=[1.0, 0.0, 0.0],
     )
 
     return MLGymEnvironment(

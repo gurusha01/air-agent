@@ -243,6 +243,131 @@ ENDOFFILE
 
 ---
 
+## Experiment 1.4: Sparse High-Bar Reward
+
+**Date:** 2026-02-07
+**Goal:** Incentivize model to push beyond plateau by only rewarding high accuracy (>=93%)
+**Status:** Superseded by Exp 1.5 (episode_done bug, reward never fired)
+
+### Critical Bug Found
+
+Episode-end rewards were **never applied** because `state["episode_done"]` was never set to True.
+The `check_done()` method returned True (max_turns) but didn't set the flag.
+Only the per-step -0.1 tool call penalty was active.
+
+### W&B
+
+- **Project:** mlgym-rl
+- **Run Name:** exp1.4-titanic-0207
+- **Trajectories:** `outputs/trajectories_exp1.4/`
+
+---
+
+## Experiment 1.5: Episode-Done Fix + Submit + Diversity Nudge
+
+**Date:** 2026-02-07
+**Goal:** Fix episode_done bug so rewards actually fire; add submit instruction; encourage model diversity
+**Status:** Completed (200 steps) - No learning due to zero-variance reward
+
+### Key Fixes (vs Exp 1.4)
+
+1. **episode_done bug fix** - `check_done()` now sets `state["episode_done"] = True` before returning True
+2. **Submit instruction in prompt** - ~75% of trajectories exit via submit
+3. **Diversity nudge in prompt** - "Try different models (RF, XGB, LR, SVM, etc.)"
+
+### Reward Function
+
+Same as Exp 1.4 (threshold-based):
+
+| Condition | Reward |
+|-----------|--------|
+| Correct tool call | 0.0 |
+| Wrong tool call | -0.1 |
+| Final accuracy >= 0.93 | +1.0 |
+| Mediocre improvement (above baseline, < 0.93) | -0.2 |
+| No improvement (at or below baseline) | -1.0 |
+
+### Results (200 steps)
+
+- 2720 trajectories, 92% got reward -0.2 (mediocre), 4.4% got +1.0 (>=0.93), 3.5% got -1.0
+- **No learning**: 26% of batches had all-same reward → zero GRPO advantage → zero gradient
+- Score flat across training: mean ~0.86 from start to finish
+- Max accuracy achieved: 0.974 (but too rare to consistently guide learning)
+
+### W&B
+
+- **Project:** mlgym-rl
+- **Run Name:** exp1.5-titanic-0207
+- **Trajectories:** `outputs/trajectories_exp1.5/`
+
+---
+
+## Experiment 1.6: Continuous GRPO-Style Reward
+
+**Date:** 2026-02-09
+**Goal:** Fix zero-variance reward problem with continuous reward in [-1, 1]
+**Status:** Completed (200 steps) - Policy collapsed after step 100
+
+### Reward Function
+
+```
+reward = improvement_reward + format_penalty, clipped to [-1, 1]
+
+improvement_reward = improvement * 5 - 0.5
+    0% improvement  → -0.5
+    10% improvement →  0.0
+    20% improvement → +0.5
+    30%+ improvement → +1.0
+
+format_penalty = -(error_count / total_steps) * 0.5
+
+No validation at all → -1.0
+```
+
+### Results (200 steps)
+
+- **Every batch had gradient signal** (0% zero-gradient batches vs 26% in exp 1.5)
+- Peaked at steps 80-100: mean 0.890, max 0.986, 17% trajectories >=0.90
+- **Policy collapsed after step ~100**: mean dropped from 0.890 → 0.852, seq_len from 5500 → 1300 tokens
+- Model learned to generate shorter (degenerate) responses
+- Likely cause: learning rate too high or no KL penalty to anchor to reference policy
+
+### W&B
+
+- **Project:** mlgym-rl
+- **Run Name:** exp1.6-titanic-0208
+- **Trajectories:** `outputs/trajectories_exp1.6/`
+
+---
+
+## GPT-5.2 Benchmark
+
+**Date:** 2026-02-09
+**Goal:** Establish ceiling performance on titanic task with frontier model
+**Method:** MLGym `run.py` with `litellm:openai/gpt-5.2`, 50 max_steps, temp 0.7
+
+### Results
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | **92.8%** |
+| Improvement over baseline | +16.3% |
+| Steps used | 25 |
+| Cost | $0.55 |
+
+### Comparison
+
+| Model | Best Accuracy | Mean Accuracy |
+|-------|--------------|---------------|
+| GPT-5.2 (50 steps) | 92.8% | 92.8% |
+| Qwen3-4B (exp 1.6 peak) | **98.6%** | 89.0% |
+| Qwen3-4B (exp 1.6 π₀) | 93.1% | 87.0% |
+| Baseline (majority class) | — | 76.6% |
+
+**Key insight:** Qwen3-4B peak exceeds GPT-5.2, meaning model capacity is sufficient. The challenge is training stability.
+
+---
+
 ## Experiment Roadmap
 
 ### Phase 1: Baselines (No Training)

@@ -19,7 +19,8 @@ try:
     from air.mlgym_env import (
         MLGymEnvironment,
         compute_delta_reward,
-        compute_final_improvement_reward,
+        metric_final_accuracy,
+        metric_improvement,
         load_environment,
     )
 
@@ -37,6 +38,7 @@ except Exception as e:
 __all__ = [
     "MLGymEnvironment",
     "compute_delta_reward",
-    "compute_final_improvement_reward",
+    "metric_final_accuracy",
+    "metric_improvement",
     "load_environment",
 ]

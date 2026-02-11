@@ -1,173 +1,135 @@
 # air-agent
 
-Training AI Research Agents with Reinforcement Learning using MLGym + prime-rl.
+Training AI Research Agents with Reinforcement Learning and Inference-Time Search using MLGym + prime-rl. Maybe we will do some test time training. 
+
+For my analysis and thourhg peocess, please look at the experiment_logs folder
 
 ## Overview
 
-This project trains language models to solve ML research tasks (data science, model training, hyperparameter tuning) using reinforcement learning. The agent interacts with MLGym environments through Docker containers, receiving rewards based on validation score improvements.
+This project trains and evaluates language models on ML research tasks (data science, game theory, regression) via two approaches:
+
+1. **RL Training (Exp 1)**: GRPO-based training with prime-rl on MLGym environments
+2. **Tree Search with Verbalized Sampling (Exp 2)**: Inference-time BFS tree search where the model proposes diverse strategies at each branch point
+3. **Adaptive Explore-Exploit Tree Search (Exp 3)**: Extends Exp 2 with per-node explore/exploit decisions and past-attempt-aware prompting
 
 ## Project Structure
 
 ```
 air-agent/
 ├── air/
-│   ├── mlgym_env.py          # Verifiers-compatible MLGym environment wrapper
-│   ├── visualize.py          # Streamlit trajectory visualizer
+│   ├── mlgym_env.py                 # MLGym environment wrapper (Exp 1)
+│   ├── tree_search.py               # Tree search with verbalized sampling (Exp 2, 3)
+│   ├── tree_viewer.py               # Streamlit tree viewer
+│   ├── compare_trajectories.py      # Streamlit trajectory comparator (Exp 1)
+│   ├── view_trajectory.py           # Terminal trajectory viewer (Exp 1)
+│   ├── wandb_logging.py             # W&B logging utilities
+│   ├── run_multitask_experiments.sh  # Batch runner for multi-task tree search
 │   └── __init__.py
-├── configs/
-│   └── mlgym/
-│       ├── rl.toml           # Full training config
-│       └── rl_debug.toml     # Debug config (10 steps, 1 task)
-├── air_mlgym.py              # Entry point for prime-rl (env_id="air_mlgym")
-├── simple_env.py             # Simple test environment (no Docker)
-├── experiments.md            # Experiment logs and results
-├── PROJECT_NOTES.md          # Issues, solutions, and debugging tips
-└── tests/
-    └── test_mlgym_env.py
+├── configs/mlgym/
+│   ├── rl_full.toml                 # Main RL training config (Exp 1.6)
+│   ├── rl.toml                      # Base RL config
+│   ├── rl_debug.toml                # Debug config (10 steps)
+│   ├── infer.toml                   # vLLM inference server config
+│   ├── orch.toml                    # Orchestrator config
+│   └── train.toml                   # Trainer config
+├── experiment_logs/
+│   ├── experiments.md               # Exp 1 (RL training) logs
+│   ├── experiments2.md              # Exp 2 (tree search) logs and results
+│   ├── experiments3.md              # Exp 3 (adaptive search) design doc
+│   ├── log_book.md                  # W&B run tracking
+│   └── PROJECT_NOTES.md             # Troubleshooting guide (12+ issues)
+├── air_mlgym.py                     # Entry point for prime-rl (env_id="air_mlgym")
+├── tests/
+│   ├── test_mlgym_env.py
+│   └── test_integration.py
+└── pyproject.toml
 ```
-
-## Dependencies
-
-- **MLGym**: ML research benchmark with Docker-based task environments
-- **prime-rl**: Distributed RL training infrastructure
-- **verifiers**: Multi-turn environment interface
-
-All dependencies are installed via editable installs in `pyproject.toml`.
 
 ## Quick Start
 
-### 1. Install
+### Install
 
 ```bash
 cd air-agent
 uv sync
-```
-
-### 2. Pull MLGym Docker Image
-
-```bash
 docker pull aigym/mlgym-agent:latest
 ```
 
-### 3. Clean GPU Processes (Important!)
+### Exp 2: Tree Search (recommended starting point)
 
 ```bash
-nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs -I{} kill -9 {}
+# Terminal 1: Start vLLM
+CUDA_VISIBLE_DEVICES=0 uv run python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen3-4B-Instruct-2507 --port 8000 --max-model-len 32768
+
+# Terminal 2: Run tree search (from MLGym dir)
+cd /path/to/MLGym
+uv run --project /path/to/air-agent \
+    python /path/to/air-agent/air/tree_search.py \
+    --branching-factor 3 --max-depth 2 --max-actions 15 \
+    --sampling-mode tail --verbose \
+    --task-config tasks/titanic.yaml
 ```
 
-### 4. Run Training
-
-**IMPORTANT:** Run from the MLGym directory so subprocesses can find task configs:
+### Exp 2: Batch runs (multi-task, multi-mode)
 
 ```bash
-cd /home/ubuntu/MLScientist/MLGym
-source /home/ubuntu/MLScientist/air-agent/.venv/bin/activate
-
-# Debug run (10 steps, ~25 minutes)
-uv run --project /home/ubuntu/MLScientist/air-agent rl @ /home/ubuntu/MLScientist/air-agent/configs/mlgym/rl_debug.toml
-
-# Full run
-uv run --project /home/ubuntu/MLScientist/air-agent rl @ /home/ubuntu/MLScientist/air-agent/configs/mlgym/rl.toml
+cd /path/to/MLGym
+# Run all 4 modes x 5 runs x 3 tasks (or filter by task)
+bash /path/to/air-agent/air/run_multitask_experiments.sh
+bash /path/to/air-agent/air/run_multitask_experiments.sh houseprice  # single task
 ```
 
-### 5. Monitor Training
+### Exp 1: RL Training
 
 ```bash
-# Trainer progress
-tail -f outputs/logs/trainer.stdout
-
-# Orchestrator/environment logs
-tail -f outputs/logs/orchestrator.stdout
+cd /path/to/MLGym
+uv run --project /path/to/air-agent rl @ /path/to/air-agent/configs/mlgym/rl_full.toml
 ```
 
-### 6. Visualize Trajectories
+## Key Results
 
-```bash
-uv run streamlit run air/visualize.py -- --trajectory_dir outputs/trajectories_debug
-```
+### Tree Search (Exp 2) — Cross-Task Ranking
 
-## GPU Allocation (8x A10G Example)
+| Sampling Mode | Titanic (acc) | Battle of Sexes (score) | House Price (R²) | Avg Rank |
+|---|---|---|---|---|
+| **Tail VS** | **0.943** | **1.422** | 0.899 | **1.33** |
+| Uniform VS | 0.941 | 1.368 | 0.892 | 2.33 |
+| No VS | 0.884 | 1.230 | **0.902** | 3.00 |
+| Local VS | 0.897 | 1.327 | 0.891 | 3.33 |
 
-The system requires separate GPUs for inference, training, and the MLGym Docker container:
+Tail verbalized sampling (asking for low-probability, unusual strategies) wins on 2/3 tasks and is the overall best mode. See `experiment_logs/experiments2.md` for full analysis.
+
+### RL Training (Exp 1)
+
+- Peak accuracy: 98.6% on titanic (Exp 1.6, GRPO with continuous rewards)
+- Policy collapsed after step 80-100. See `experiment_logs/experiments.md`.
+
+## GPU Allocation
 
 | GPU | Usage |
 |-----|-------|
 | 0 | vLLM inference server |
-| 1 | (skip - often occupied) |
-| 2-6 | FSDP trainer (5 GPUs) |
+| 2-6 | FSDP trainer (Exp 1 only) |
 | 7 | MLGym Docker container |
 
-Configure in `rl_debug.toml`:
-```toml
-inference_gpu_ids = [0]
-trainer_gpu_ids = [2, 3, 4, 5, 6]
+## Monitoring
 
-[[orchestrator.env]]
-args = { env_gpu = "7", ... }
+```bash
+# Tree search viewer
+uv run streamlit run air/tree_viewer.py --server.port 8502
+
+# RL training logs
+tail -f outputs/logs/trainer.stdout
+tail -f outputs/logs/orchestrator.stdout
+
+# Trajectory comparator
+uv run streamlit run air/compare_trajectories.py --server.port 8501
 ```
-
-## Configuration
-
-Key parameters in `configs/mlgym/rl_debug.toml`:
-
-| Parameter | Description | Debug Value |
-|-----------|-------------|-------------|
-| `max_steps` | Training gradient updates | 10 |
-| `batch_size` | Trajectories per training step | 8 |
-| `rollouts_per_example` | Rollouts per prompt | 4 |
-| `max_turns` | Agent actions per trajectory | 10 |
-| `num_examples_per_task` | Prompts in dataset pool | 10 |
-| `task_configs` | MLGym tasks to train on | ["titanic.yaml"] |
-
-## Key Features
-
-- **Branching trajectory strategy**: Each turn is a separate training sample
-- **Delta improvement rewards**: `reward = current_score - previous_score` at each `validate`
-- **Container lifecycle management**: Automatic container reset and recovery
-- **Multiple tasks**: titanic, prisonersDilemma, imageClassificationFMnist, etc.
-- **W&B logging**: Training metrics and sample trajectories
-- **Trajectory saving**: JSON files for visualization and debugging
 
 ## Troubleshooting
 
-See [PROJECT_NOTES.md](PROJECT_NOTES.md) for detailed debugging information.
-
-Common issues:
-1. **"pip folder not found"** - Fixed in mlgym_env.py (cd before reset)
-2. **GPU OOM** - Kill old vLLM processes before starting
-3. **Trainer hangs** - Clean up stale processes from previous runs
-4. **Task configs not found** - Run from MLGym directory
-
-## Experiment Results
-
-See [experiments.md](experiments.md) for experiment logs.
-
-### Debug Run (2026-02-05)
-- 10/10 training steps completed
-- 0 container errors
-- Infrastructure verified working
-- Reward signal needs fixing (Loss = 0)
-
-## Architecture
-
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   vLLM Server   │────▶│   Orchestrator   │────▶│     Trainer     │
-│    (GPU 0)      │     │   (generates     │     │   (FSDP, GPUs   │
-│                 │◀────│    rollouts)     │◀────│     2-6)        │
-└─────────────────┘     └────────┬─────────┘     └─────────────────┘
-                                 │
-                                 ▼
-                        ┌──────────────────┐
-                        │  MLGym Docker    │
-                        │  Container       │
-                        │  (GPU 7)         │
-                        │                  │
-                        │  - titanic       │
-                        │  - prisonersDil  │
-                        │  - fmnist        │
-                        └──────────────────┘
-```
+See `experiment_logs/PROJECT_NOTES.md` for 12+ documented issues and fixes.
 
 ## License
 
