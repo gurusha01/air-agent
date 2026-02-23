@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2_1_0",
+  "parent_id": "root_2_1",
+  "depth": 3,
+  "strategy": "Implement a dynamic entropy-based action selection strategy where the row player computes the entropy of the opponent's historical action distribution over a rolling window of 5 rounds. If the entropy exceeds a threshold of 0.8, the row player selects a random action uniformly from both options to introduce unpredictability. Otherwise, it selects the action that maximizes expected payoff based on a learned transition model derived from past interactions. This strategy leverages information-theoretic principles to detect and respond to opponent randomness, promoting strategic unpredictability without assuming periodicity.",
+  "score": 1.3124899864196777,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport math\n\ndef row_strategy(history):\n    if len(history) < 5:\n        # Not enough data to compute entropy\n        return 0\n    \n    # Extract opponent's moves over last 5 rounds\n    their_moves = [move for _, move in history][-5:]\n    \n    # Compute empirical probability distribution\n    prob_0 = their_moves.count(0) / len(their_moves)\n    prob_1 = their_moves.count(1) / len(their_moves)\n    \n    # Compute entropy of opponent's move distribution\n    entropy = 0\n    if prob_0 > 0:\n        entropy += -prob_0 * math.log2(prob_0)\n    if prob_1 > 0:\n        entropy += -prob_1 * math.log2(prob_1)\n    \n    # Threshold for randomness: if entropy > 0.8, randomize\n    if entropy > 0.8:\n        return random.choice([0, 1])\n    \n    # Otherwise, choose action that maximizes expected payoff\n    # We prefer 0 (payoff 2 when both 0), but if opponent is likely to play 1, we play 0 to get (1,2)\n    # If opponent is likely to play 0, we play 1 to get (2,1)\n    if prob_1 > prob_0:\n        return 1\n    else:\n        return 0\n\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.3124899864196777}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 17,
+  "reflection": "The best-performing approach so far is **temporal difference learning with eligibility traces (TDE)** in *root_2_0*, achieving a score of **1.4072**, significantly outperforming the baseline (1.0227). This success stems from its ability to model longer-term dependencies in opponent behavior by maintaining eligibility traces, allowing the model to update Q-values based on delayed rewards\u2014critical in a game like Battle of Sexes where cooperation patterns evolve over time. In contrast, **behavioral cloning (root_2_1)** with a score of only **0.5974** has consistently failed, as it copies past opponent actions without learning the underlying strategic dynamics or reward structure, leading to brittle, short-sighted policies. Similarly, **random walk-based strategies (root_1_0: 0.8044)** and **static mixed strategies (root_0: 0.8040)** fail to adapt to opponent behavior, resulting in poor performance. The next experiment should expand *root_2_1* by replacing the simple behavioral cloning with a **reinforcement learning framework using a small LSTM with 64 hidden units and a learning rate of 0.001**, where the agent learns a policy that predicts opponent actions and rewards based on historical state transitions, rather than just copying observed actions. This hybrid approach\u2014combining behavioral imitation with temporal modeling\u2014should better capture the strategic evolution in the game and improve score beyond 0.5974."
+}

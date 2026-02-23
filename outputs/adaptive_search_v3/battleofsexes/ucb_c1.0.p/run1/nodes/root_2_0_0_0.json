@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0_0_0",
+  "parent_id": "root_2_0_0",
+  "depth": 4,
+  "strategy": "Implement a time-varying sinusoidal coordination strategy where the probability of coordination is modulated by a sine wave function of the round number, with a frequency of 0.3 cycles per 10 rounds and a phase shift adapted to the opponent's recent action timing. Specifically, the coordination probability is set as: P(coord) = 0.5 + 0.3 * sin(0.3 * round_number + phase_offset), where phase_offset is updated every 5 rounds based on the opponent's action timing (e.g., if the opponent acts in a consistent rhythm, the phase is aligned to match that rhythm). This leverages periodicity in opponent behavior without relying on thresholds or historical frequencies, exploiting cyclical patterns in action timing.",
+  "score": 0.9248200058937073,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport math\n\ndef row_strategy(history):\n    if len(history) == 0:\n        return 0\n    \n    round_num = len(history)\n    \n    # Base frequency: 0.3 cycles per 10 rounds \u2192 0.03 cycles per round\n    base_freq = 0.03\n    phase_offset = 0.0\n    \n    # Update phase offset every 5 rounds based on opponent's timing\n    if len(history) >= 5:\n        # Extract opponent's moves in last 5 rounds\n        opponent_moves = [move[1] for move in history[-5:]]\n        # Compute timing pattern: if opponent alternates, phase shifts to align\n        if len(opponent_moves) >= 2:\n            # Simple phase estimation: if opponent moved at odd/even rounds, adjust phase\n            odd_even_pattern = sum(1 for i in range(1, len(opponent_moves)) if opponent_moves[i] != opponent_moves[i-1])\n            if odd_even_pattern > 2:\n                # Opponent is inconsistent \u2014 shift phase to avoid predictability\n                phase_offset += 0.1\n            else:\n                # Opponent shows pattern \u2014 align phase to match\n                phase_offset += 0.05 * (round_num % 10)\n    \n    # Sinusoidal coordination probability\n    coordination_prob = 0.5 + 0.3 * math.sin(base_freq * round_num + phase_offset)\n    \n    # Clamp probability to [0, 1]\n    coordination_prob = max(0, min(1, coordination_prob))\n    \n    # Final decision\n    if random.random() < coordination_prob:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.9248200058937073}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 22
+}

@@ -1,0 +1,22 @@
+{
+  "node_id": "root_0_0_0_0_0_0_0_0_0",
+  "parent_id": "root_0_0_0_0_0_0_0_0",
+  "depth": 9,
+  "strategy": "Apply a time-series momentum-based cooperation policy where the row player tracks the past three rounds' payoff trends. If the payoff from cooperation has increased over the last three rounds, the cooperation probability is adjusted upward by 0.07; if it has declined, it is decreased by 0.07. This approach uses temporal pattern recognition to detect trends rather than immediate differences, making it fundamentally different from immediate gradient updates. The strategy incorporates a moving average of past payoffs to smooth noise and detect underlying shifts in opponent behavior.",
+  "score": 0.9619801044464111,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) == 0:\n        return 0\n    \n    # If we have at least 3 rounds of history to compute trends\n    if len(history) < 3:\n        return 0\n    \n    # Extract the last 3 rounds of moves\n    moves = history[-3:]\n    row_moves = [m[0] for m in moves]\n    col_moves = [m[1] for m in moves]\n    \n    # Compute payoff for cooperation in each of the last 3 rounds\n    # Payoff is 2 if both choose 0, 1 if both choose 1, 0 otherwise\n    payoffs_cooperate = []\n    for r, c in zip(row_moves, col_moves):\n        if r == 0 and c == 0:\n            payoffs_cooperate.append(2)\n        elif r == 1 and c == 1:\n            payoffs_cooperate.append(2)\n        else:\n            payoffs_cooperate.append(0)\n    \n    # Compute moving average of payoffs when cooperating\n    avg_payoff = sum(payoffs_cooperate) / len(payoffs_cooperate)\n    \n    # Base cooperation probability starts at 0.5\n    prob = 0.5\n    \n    # If the average payoff has increased over the last 3 rounds, increase probability\n    # We use a simple trend check: compare average to a smoothed baseline\n    if len(payoffs_cooperate) >= 2:\n        # Simple trend: if recent average is higher than previous average\n        prev_avg = sum(payoffs_cooperate[:-1]) / (len(payoffs_cooperate) - 1) if len(payoffs_cooperate) > 1 else 0\n        if avg_payoff > prev_avg:\n            prob += 0.07\n        else:\n            prob -= 0.07\n    \n    # Cap probability between 0.1 and 0.9\n    prob = max(0.1, min(0.9, prob))\n    \n    # Return 1 with probability `prob`, else 0\n    return 0 if random.random() < (1 - prob) else 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.9619801044464111}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 67,
+  "reflection": null
+}

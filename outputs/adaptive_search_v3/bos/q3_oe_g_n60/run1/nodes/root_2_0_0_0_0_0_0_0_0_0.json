@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2_0_0_0_0_0_0_0_0_0",
+  "parent_id": "root_2_0_0_0_0_0_0_0_0",
+  "depth": 10,
+  "strategy": "Use a Transformer-based model with self-attention over move history to capture long-range dependencies in opponent behavior. Instead of relying on GRU-based sequential modeling, this approach explicitly models interactions between past moves using cross-attention layers, allowing the row player to weigh different historical contexts dynamically. The attention weights are used to compute a weighted average of expected payoffs for each action, with a soft threshold applied to suppress low-confidence attention heads. Action selection is then determined by the highest attention-weighted payoff, with a stochastic perturbation introduced to maintain unpredictability.",
+  "score": 1.112879991531372,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport numpy as np\n\ndef row_strategy(history):\n    if len(history) == 0:\n        return 0\n    \n    opponent_moves = [move for _, move in history]\n    \n    if len(opponent_moves) < 2:\n        return 0\n    \n    # Simulate self-attention over opponent's move history\n    # Use a simplified attention mechanism: compute attention weights between each move\n    # and the current state\n    \n    n_moves = len(opponent_moves)\n    if n_moves == 1:\n        return 0\n    \n    # Create attention weights: higher weight for moves that are similar (same value)\n    # Use dot product similarity between each move and the current move (0 or 1)\n    attention_weights = []\n    for i in range(n_moves):\n        # Similarity: if opponent played the same as current, score 1, else 0\n        # We are predicting current action, so we use past moves to build context\n        if opponent_moves[i] == 0:\n            similarity = 1.0 if i < n_moves - 1 and opponent_moves[i] == 0 else 0.5\n        else:\n            similarity = 1.0 if i < n_moves - 1 and opponent_moves[i] == 1 else 0.5\n        attention_weights.append(similarity)\n    \n    # Normalize attention weights\n    total = sum(attention_weights)\n    if total == 0:\n        total = 1.0\n    weights = [w / total for w in attention_weights]\n    \n    # Compute weighted payoff for action 0 and 1\n    payoff_0 = 0.0\n    payoff_1 = 0.0\n    \n    for i, w in enumerate(weights):\n        if opponent_moves[i] == 0:\n            payoff_0 += w * 2.0  # payoff 2 when both choose 0\n        else:\n            payoff_1 += w * 2.0  # payoff 2 when both choose 1\n    \n    # Add stochastic perturbation to maintain unpredictability\n    perturbation = random.gauss(0, 0.2)\n    \n    # Choose action with higher expected value\n    expected_0 = payoff_0 + perturbation\n    expected_1 = payoff_1 + perturbation\n    \n    if expected_0 > expected_1:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.112879991531372}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 52,
+  "reflection": null
+}

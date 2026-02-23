@@ -1,0 +1,26 @@
+{
+  "node_id": "root_0",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "draft: You are an ML research agent working on a task.",
+  "score": 0.9067825372800441,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom catboost import CatBoostRegressor\nfrom sklearn.model_selection import train_test_split\n\n# 1. Load data\ntrain_path = 'data/train.csv'\ntest_path = 'data/test.csv'\n\ntrain_df = pd.read_csv(train_path)\ntest_df = pd.read_csv(test_path)\n\n# 2. Separate target\ny = train_df['SalePrice']\nX = train_df.drop(columns=['SalePrice'])\ntest_ids = test_df['Id']\nX_test = test_df.copy()\n\n# 3. Identify categorical columns (object dtype)\ncat_cols = X.select_dtypes(include=['object']).columns.tolist()\n\n# 4. Simple missing value handling\n#   - numeric: median\n#   - categorical: 'Missing'\nfor col in X.columns:\n    if col in cat_cols:\n        X[col] = X[col].fillna('Missing')\n        X_test[col] = X_test[col].fillna('Missing')\n    else:\n        median_val = X[col].median()\n        X[col] = X[col].fillna(median_val)\n        X_test[col] = X_test[col].fillna(median_val)\n\n# 5. Train/valid split for early stopping\nX_train, X_valid, y_train, y_valid = train_test_split(\n    X, y, test_size=0.15, random_state=42\n)\n\n# 6. Initialize and fit CatBoostRegressor\nmodel = CatBoostRegressor(\n    iterations=5000,\n    learning_rate=0.03,\n    depth=6,\n    loss_function='RMSE',\n    eval_metric='R2',\n    random_seed=42,\n    verbose=0,\n    early_stopping_rounds=200\n)\n\nmodel.fit(\n    X_train,\n    y_train,\n    cat_features=cat_cols,\n    eval_set=(X_valid, y_valid),\n    use_best_model=True\n)\n\n# 7. Predict on test data\ntest_preds = model.predict(X_test)\n\n# 8. Create submission file\nsubmission = pd.DataFrame({\n    'Id': test_ids,\n    'SalePrice': test_preds\n})\n\nsubmission.to_csv('submission.csv', index=False)\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'rmse': 30340.111853413255, 'r2': 0.8799891474739243}\nEvaluation Score: {'rmse': 26739.639998855, 'r2': 0.9067825372800441}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9
+}

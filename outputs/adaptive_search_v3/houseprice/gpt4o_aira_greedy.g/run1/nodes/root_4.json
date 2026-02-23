@@ -1,0 +1,26 @@
+{
+  "node_id": "root_4",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "draft: You are an ML research agent working on a task.",
+  "score": 0.8790653403555593,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.preprocessing import StandardScaler, OneHotEncoder\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.ensemble import RandomForestRegressor\nfrom sklearn.metrics import r2_score\n\n# Load data\ntrain = pd.read_csv('data/train.csv')\ntest = pd.read_csv('data/test.csv')\nvalidation = pd.read_csv('data/validation.csv')\n\n# Separate features and target\nX = train.drop(['Id', 'SalePrice'], axis=1)\ny = train['SalePrice']\nX_test = test.drop(['Id'], axis=1)\nX_validation = validation.drop(['Id', 'SalePrice'], axis=1)\ny_validation = validation['SalePrice']\n\n# Identify categorical and numerical columns\ncategorical_cols = X.select_dtypes(include=['object']).columns\nnumerical_cols = X.select_dtypes(exclude=['object']).columns\n\n# Preprocessing for numerical data\nnumerical_transformer = Pipeline(steps=[\n    ('impute', SimpleImputer(strategy='median')),\n    ('scale', StandardScaler())\n])\n\n# Preprocessing for categorical data\ncategorical_transformer = Pipeline(steps=[\n    ('impute', SimpleImputer(strategy='most_frequent')),\n    ('onehot', OneHotEncoder(handle_unknown='ignore'))\n])\n\n# Combine preprocessing steps\npreprocessor = ColumnTransformer(\n    transformers=[\n        ('num', numerical_transformer, numerical_cols),\n        ('cat', categorical_transformer, categorical_cols)\n    ])\n\n# Create model pipeline\nmodel = Pipeline(steps=[\n    ('preprocessor', preprocessor),\n    ('regressor', RandomForestRegressor(n_estimators=200, max_depth=20, random_state=0))\n])\n\n# Split training data into training and validation sets\nX_train, X_eval, y_train, y_eval = train_test_split(X, y, test_size=0.2, random_state=0)\n\n# Train model\nmodel.fit(X_train, y_train)\n\n# Predict on validation set\ny_pred = model.predict(X_eval)\nprint(f\"Validation R2 Score: {r2_score(y_eval, y_pred)}\")\n\n#",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Validation R2 Score: 0.8699542871847139",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'rmse': 30340.111853413255, 'r2': 0.8799891474739243}\nEvaluation Score: {'rmse': 30456.66247683763, 'r2': 0.8790653403555593}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9
+}

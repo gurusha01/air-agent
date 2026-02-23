@@ -1,0 +1,22 @@
+{
+  "node_id": "root_1_0",
+  "parent_id": "root_1",
+  "depth": 2,
+  "strategy": "Apply a time-varying mixed strategy where the probability of choosing Action A dynamically adjusts based on the column player's previous action history, using a sliding window of the last 3 moves to compute a reinforcement learning-inspired update rule. The probability is updated every round using a simple epsilon-greedy decay based on observed column player responses, favoring actions that led to higher payoffs in the last 2 rounds, while introducing stochastic noise to prevent predictability.",
+  "score": 1.0048500299453735,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 3:\n        return 0\n    \n    # Extract the last 3 moves of the opponent\n    opponent_moves = [m for _, m in history[-3:]]\n    \n    # Simple reinforcement learning-inspired update: favor action that led to higher payoff\n    # Payoff: (2,1) for (0,0), (1,2) for (1,1), (0,0) otherwise\n    # So (0,0) gives us 2, (1,1) gives us 1, others give 0\n    # We track the last two rounds to infer payoff\n    recent_pairs = history[-2:]\n    payoff_0 = 0\n    payoff_1 = 0\n    \n    for my_move, their_move in recent_pairs:\n        if my_move == 0 and their_move == 0:\n            payoff_0 += 2\n        elif my_move == 1 and their_move == 1:\n            payoff_1 += 1\n        # Otherwise, 0 payoff\n    \n    # Base probability: start with 0.5, adjust based on payoff\n    prob_0 = 0.5\n    if payoff_0 > payoff_1:\n        prob_0 = min(0.9, prob_0 + 0.1)\n    elif payoff_1 > payoff_0:\n        prob_0 = max(0.1, prob_0 - 0.1)\n    \n    # Add stochastic noise to prevent predictability\n    if random.random() < 0.1:\n        prob_0 = 1 - prob_0\n    \n    return 0 if random.random() < prob_0 else 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.0048500299453735}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12,
+  "reflection": null
+}

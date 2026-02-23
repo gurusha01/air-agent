@@ -1,0 +1,26 @@
+{
+  "node_id": "root_0",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "draft: You are an ML research agent working on a task.",
+  "score": 0.8732057416267942,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.preprocessing import OneHotEncoder\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.impute import SimpleImputer\nfrom xgboost import XGBClassifier\n\ndef load_data():\n    train = pd.read_csv('data/train.csv')\n    test = pd.read_csv('data/test.csv')\n    return train, test\n\ndef feature_engineering(df):\n    # Title from Name\n    df['Title'] = df['Name'].str.extract(r',\\s*([^\\.]*)\\s*\\.', expand=False)\n    rare_titles = ['Capt', 'Col', 'Don', 'Dona', 'Dr', 'Jonkheer', 'Lady', \n                   'Major', 'Rev', 'Sir', 'Countess']\n    df['Title'] = df['Title'].replace(rare_titles, 'Rare')\n    df['Title'] = df['Title'].replace({'Mlle': 'Miss', 'Ms': 'Miss', 'Mme': 'Mrs'})\n    \n    # Family features\n    df['FamilySize'] = df['SibSp'] + df['Parch'] + 1\n    df['IsAlone'] = (df['FamilySize'] == 1).astype(int)\n    \n    # Cabin type\n    df['CabinType'] = df['Cabin'].fillna('Unknown').str[0]\n    \n    # Ticket prefix (first character, digit/non-digit)\n    df['TicketPrefix'] = df['Ticket'].apply(lambda x: x.split()[0] if not x.split()[0].isdigit() else 'NONE')\n    \n    # Fare per person\n    df['FarePP'] = df['Fare'] / df['FamilySize']\n    \n    return df\n\ndef preprocess_and_split(train, test):\n    y_train = train['Survived']\n    train = train.drop(columns=['Survived'])\n    \n    full = pd.concat([train, test], axis=0, ignore_index=True)\n    full = feature_engineering(full)\n    \n    # Columns\n    numeric_features = ['Age', 'Fare', 'FamilySize', 'FarePP']\n    categorical_features = ['Pclass', 'Sex', 'Embarked', 'Title', 'CabinType', 'TicketPrefix', 'IsAlone']\n    \n    # Pipeline\n    numeric_transformer = Pipeline(steps=[\n        ('imputer', SimpleImputer(strategy='median'))\n    ])\n    categorical_transformer = Pipeline(steps=[\n        ('imputer', SimpleImputer(strategy='most_frequent')),\n        ('onehot', OneHotEncoder(handle_unknown='ignore'))\n   ",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.8732057416267942}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9
+}

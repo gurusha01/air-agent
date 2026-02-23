@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2_1_1",
+  "parent_id": "root_2_1",
+  "depth": 3,
+  "strategy": "Implement a temporal difference learning (TD) strategy where the row player estimates the value of each action based on past outcomes and updates its choice using a decaying reward signal. The action selected in each round is chosen probabilistically based on a softmax function over the estimated values, with the learning rate decaying exponentially over time to prevent overfitting. The strategy dynamically adjusts to opponent patterns by tracking the recent sequence of opponent moves and updating value estimates every 3 rounds.",
+  "score": 0.8270799517631531,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport numpy as np\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Initialize value estimates for action 0 and 1\n    value_0 = 0.0\n    value_1 = 0.0\n    alpha = 0.1  # Initial learning rate\n    decay_rate = 0.99  # Exponential decay for learning rate\n    \n    # Extract recent opponent moves (last 5 rounds)\n    opponent_moves = [move for _, move in history[-5:]]\n    \n    # Compute recent payoff for each action\n    total_payoff = 0\n    for (my_move, their_move) in history:\n        if my_move == their_move:\n            total_payoff += 2 if my_move == 0 else 1\n        else:\n            total_payoff += 0\n    \n    # Update values using TD learning with decaying alpha\n    alpha *= decay_rate\n    \n    # Simple value estimation based on opponent consistency\n    if len(set(opponent_moves)) == 1:\n        # Opponent is consistent \u2014 favor divergence\n        value_1 += alpha * (1.0 if their_move == 1 else 0)\n        value_0 += alpha * (1.0 if their_move == 0 else 0)\n    else:\n        # Opponent is erratic \u2014 favor coordination\n        value_0 += alpha * (1.0 if their_move == 0 else 0)\n        value_1 += alpha * (1.0 if their_move == 1 else 0)\n    \n    # Softmax over values to choose action\n    exp_values = np.exp([value_0, value_1])\n    total_exp = sum(exp_values)\n    prob_0 = exp_values[0] / total_exp\n    prob_1 = exp_values[1] / total_exp\n    \n    # Choose action with softmax probability\n    return 0 if random.random() < prob_0 else 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.8270799517631531}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 17,
+  "reflection": "The best-performing approach so far is the GRU-based RNN in **root_2_0_0**, achieving a score of **1.4325**\u2014a significant improvement over the baseline (1.0227)\u2014because it effectively captures temporal dependencies in the opponent\u2019s move sequence using only the last five moves, and leverages time-aware embeddings instead of rigid one-hot encodings, which better model sequential patterns. Reinforcement learning strategies like **root_2_1_0** (score: 1.3767) also show promise, indicating that adaptive action selection based on learned Q-values can outperform static or periodic strategies. In contrast, meta-strategies like **root_2_1** (score: 0.8311) and geometric decay (root_1_0: 0.6676) consistently underperform, likely due to their lack of responsiveness to real-time opponent behavior and over-reliance on simplistic temporal decay. The failure of contextual bandits with only three-move features (root_2_0: 0.4615) highlights that shallow feature engineering and limited context fail to capture complex opponent dynamics. The next experiment should expand **root_2_1** by introducing a **time-aware embedding layer with a GRU** that processes the opponent\u2019s last five moves, using the same time-aware embedding design as in root_2_0_0, but applied within a meta-mode that alternates between coordination and conflict based on opponent history\u2014specifically, using the GRU\u2019s hidden state to compute a confidence score for coordination, and switching modes when that score drops below 0.3. ..."
+}

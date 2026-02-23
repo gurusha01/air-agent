@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "Implement a dynamic payoff-weighted strategy where the row player adjusts their choice based on the average historical payoff of each option (movie or stadium) relative to the column player's past selections. If the average payoff of choosing the movie when the column player picked movie is higher than the average payoff of choosing stadium when the column player picked stadium, the row player increases the movie probability by 0.1; otherwise, they increase the stadium probability by 0.1. This strategy uses payoff feedback to adapt, rather than relying on behavioral patterns. The initial probability is set to 0.5, and it evolves over time based on cumulative rewards.",
+  "score": 0.9105299711227417,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Initialize payoff tracking\n    payoff_movie_when_opponent_chooses_1 = 0\n    payoff_stadium_when_opponent_chooses_0 = 0\n    count_movie_opponent_1 = 0\n    count_stadium_opponent_0 = 0\n    \n    # Aggregate historical data\n    for my_move, their_move in history:\n        if their_move == 1:  # opponent chose movie\n            if my_move == 1:  # I chose movie\n                payoff_movie_when_opponent_chooses_1 += 2  # both choose 1: payoff 2\n            else:  # I chose stadium\n                payoff_stadium_when_opponent_chooses_0 += 0  # different: payoff 0\n            count_movie_opponent_1 += 1\n        else:  # opponent chose stadium\n            if my_move == 0:  # I chose stadium\n                payoff_stadium_when_opponent_chooses_0 += 2  # both choose 0: payoff 2\n            else:  # I chose movie\n                payoff_movie_when_opponent_chooses_1 += 0  # different: payoff 0\n            count_stadium_opponent_0 += 1\n    \n    # Avoid division by zero\n    if count_movie_opponent_1 == 0:\n        avg_movie_payoff = 0\n    else:\n        avg_movie_payoff = payoff_movie_when_opponent_chooses_1 / count_movie_opponent_1\n    \n    if count_stadium_opponent_0 == 0:\n        avg_stadium_payoff = 0\n    else:\n        avg_stadium_payoff = payoff_stadium_when_opponent_chooses_0 / count_stadium_opponent_0\n    \n    # Base probability starts at 0.5\n    prob_movie = 0.5\n    \n    # Adjust based on relative payoffs\n    if avg_movie_payoff > avg_stadium_payoff:\n        prob_movie += 0.1\n    else:\n        prob_movie -= 0.1\n    \n    # Clamp probabilities between 0 and 1\n    prob_movie = max(0, min(1, prob_movie))\n    \n    return random.choices([0, 1], weights=[1 - prob_movie, prob_movie])[0]\n\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.9105299711227417}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

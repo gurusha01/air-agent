@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2_0_0_0_0",
+  "parent_id": "root_2_0_0_0",
+  "depth": 5,
+  "strategy": "Implement a quantum-inspired probability modulation strategy where the row player's cooperation probability is adjusted based on the phase difference between their action and the column player's historical response. This approach models the interaction as a quantum state evolution, with cooperation probability derived from a cosine function of the time lag between mutual cooperation and defection events. The phase shift is updated after each round using a normalized lag-based correlation metric. This introduces non-linear, oscillatory dynamics that can exploit cyclic patterns in opponent behavior not captured by classical reinforcement learning.",
+  "score": 1.0784698724746704,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport math\nimport random\n\ndef row_strategy(history):\n    if len(history) < 2:\n        return 0\n    \n    # Count cooperation events and their timing\n    mutual_coop = 0\n    mutual_defect = 0\n    my_coop = 0\n    my_defect = 0\n    their_coop = 0\n    their_defect = 0\n    \n    for my_move, their_move in history:\n        if my_move == 0 and their_move == 0:\n            mutual_coop += 1\n        elif my_move == 1 and their_move == 1:\n            mutual_defect += 1\n        my_coop += 1 if my_move == 0 else 0\n        my_defect += 1 if my_move == 1 else 0\n        their_coop += 1 if their_move == 0 else 0\n        their_defect += 1 if their_move == 1 else 0\n    \n    # Avoid division by zero\n    if my_coop + my_defect == 0:\n        return 0\n    \n    # Compute normalized lag-based phase shift\n    # Use a simple correlation-like metric between actions\n    phase_shift = 0.0\n    if mutual_coop > 0:\n        phase_shift += 1.0 * mutual_coop / (mutual_coop + mutual_defect)\n    if mutual_defect > 0:\n        phase_shift -= 1.0 * mutual_defect / (mutual_coop + mutual_defect)\n    \n    # Normalize phase shift to [-\u03c0, \u03c0]\n    phase_shift = phase_shift / (len(history) * 0.1) if len(history) > 0 else 0\n    phase_shift = math.pi * (phase_shift + 1.0) / 2.0  # Clamp to [0, \u03c0]\n    \n    # Use cosine to derive cooperation probability\n    # Higher phase difference \u2192 lower cooperation\n    prob_cooperate = 0.5 + 0.5 * math.cos(phase_shift)\n    \n    # Clamp to [0, 1]\n    prob_cooperate = max(0.0, min(1.0, prob_cooperate))\n    \n    return 1 if random.random() < prob_cooperate else 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.0784698724746704}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 27,
+  "reflection": "The best-performing approach so far is the GRU-based RNN in **root_1_0_0_0** (score: 1.4340), which outperforms all others by leveraging sequential dynamics through a state representation of the opponent\u2019s last five actions. This success stems from the GRU\u2019s ability to effectively capture short- to medium-term behavioral patterns without overfitting, unlike more complex models like Transformers or TCNs that introduce unnecessary complexity or instability. In contrast, approaches like **root_1_0_0_0_1_0_0_0_0_0_0** (1.2725) and **root_1_0_0_0_1_0_0_0_0_0_0_0** (0.5974) fail due to over-reliance on linear regression or decision trees, which lack the capacity to model non-linear, temporal dependencies in opponent behavior. The **Transformer-based models** (e.g., root_1_0_0_0_1_0_0_0) underperform (0.8524) due to poor handling of short sequences and excessive parameterization, suggesting that self-attention is not well-suited for this domain without careful tuning. The next experiment should expand **root_2_0_0_0** (score: 0.8052) by replacing its basic reinforcement learning with a **TD(\u03bb) learner using a state representation of the opponent\u2019s last three actions (one-hot encoded)** and a **sliding window of 5 rounds**, similar to the successful GRU setup but with a more stable reward signal. This maintains the simplicity and interpretability of the baseline while improving temporal modeling and convergence."
+}

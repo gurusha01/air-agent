@@ -1,0 +1,26 @@
+{
+  "node_id": "root_2_1",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "improve: You are an ML research agent working on a task.",
+  "score": 0.8779904306220095,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.preprocessing import StandardScaler\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.metrics import accuracy_score\n\ndef preprocess(df):\n    # Title feature from Name\n    df['Title'] = df['Name'].str.extract(' ([A-Za-z]+)\\.', expand=False)\n    # Simplify titles\n    df['Title'] = df['Title'].replace(['Lady', 'Countess','Capt', 'Col',\\\n                                       'Don', 'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer', 'Dona'], 'Rare')\n    df['Title'] = df['Title'].replace('Mlle', 'Miss')\n    df['Title'] = df['Title'].replace('Ms', 'Miss')\n    df['Title'] = df['Title'].replace('Mme', 'Mrs')\n    \n    # Family size\n    df['FamilySize'] = df['SibSp'] + df['Parch'] + 1\n    df['IsAlone'] = (df['FamilySize'] == 1).astype(int)\n    \n    # Fill Embarked\n    df['Embarked'] = df['Embarked'].fillna(df['Embarked'].mode()[0])\n    # Fill Fare\n    df['Fare'] = df['Fare'].fillna(df['Fare'].median())\n    \n    # Age imputation: median per Title\n    title_age_map = df.groupby('Title')['Age'].median()\n    df['Age'] = df.apply(lambda row: title_age_map[row['Title']] if pd.isnull(row['Age']) else row['Age'], axis=1)\n    \n    # Cabin letter\n    df['CabinLetter'] = df['Cabin'].str.slice(0,1)\n    df['CabinLetter'] = df['CabinLetter'].fillna('Unknown')\n    \n    # Ticket prefix\n    df['TicketPrefix'] = df['Ticket'].apply(lambda x: x.split()[0] if not x.isdigit() else 'NoPrefix')\n    \n    # Fare per person\n    df['FarePerPerson'] = df['Fare'] / df['FamilySize']\n    \n    # Drop columns not used\n    drop_cols = ['PassengerId','Name','Ticket','Cabin']\n    df_proc = df.drop(columns=drop_cols)\n    \n    # Categorical vs numerical\n    categorical = ['Sex','Embarked','Title','CabinLetter','TicketPrefix','Pclass']\n ",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.8779904306220095}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9
+}

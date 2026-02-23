@@ -1,0 +1,26 @@
+{
+  "node_id": "root_1_4_0",
+  "parent_id": "root_1_4",
+  "depth": 3,
+  "strategy": "improve: You are an ML research agent working on a task.",
+  "score": 0.8985057525409046,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split, GridSearchCV\nfrom sklearn.preprocessing import StandardScaler, OneHotEncoder\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.ensemble import StackingRegressor\nfrom sklearn.linear_model import Ridge\nfrom sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor\nfrom sklearn.metrics import make_scorer, r2_score\n\n# Load datasets\ntrain_data = pd.read_csv('data/train.csv')\ntest_data = pd.read_csv('data/test.csv')\n\n# Separate features and target\nX = train_data.drop(columns=['SalePrice', 'Id'])\ny = train_data['SalePrice']\nX_test = test_data.drop(columns=['Id'])\n\n# Identify numerical and categorical columns\nnum_features = X.select_dtypes(include=['int64', 'float64']).columns\ncat_features = X.select_dtypes(include=['object']).columns\n\n# Preprocessor\nnumeric_transformer = Pipeline(steps=[\n    ('imputer', SimpleImputer(strategy='mean')),\n    ('scaler', StandardScaler())])\n\ncategorical_transformer = Pipeline(steps=[\n    ('imputer', SimpleImputer(strategy='most_frequent')),\n    ('onehot', OneHotEncoder(handle_unknown='ignore'))])\n\npreprocessor = ColumnTransformer(\n    transformers=[\n        ('num', numeric_transformer, num_features),\n        ('cat', categorical_transformer, cat_features)])\n\n# Define base models\nbase_models = [\n    ('randomforest', RandomForestRegressor(n_estimators=100, random_state=42)),\n    ('gradientboosting', GradientBoostingRegressor(n_estimators=100, random_state=42))\n]\n\n# Stacking Regressor\nstacked_model = StackingRegressor(\n    estimators=base_models,\n    final_estimator=Ridge(),\n    cv=5,\n    n_jobs=-1\n)\n\n# Create pipeline with preprocessing and model\nmodel_pipeline = Pipeline(steps=[('preprocessor', preprocessor),\n                                 ('model', stacked_model)])\n\n# Train model\nmodel_pipeline.fit(X, y)\n\n# P",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'rmse': 30340.111853413255, 'r2': 0.8799891474739243}\nEvaluation Score: {'rmse': 27901.50508779473, 'r2': 0.8985057525409046}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9
+}

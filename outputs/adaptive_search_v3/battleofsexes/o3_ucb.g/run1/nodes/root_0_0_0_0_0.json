@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_0_0_0_0",
+  "parent_id": "root_0_0_0_0",
+  "depth": 5,
+  "strategy": "Context-Tree Weighting (CTW) Opponent Model  \n1. Represent the last k pairs of (row, column) moves as a symbol string; build a binary context tree of depth \u2264 8 updated online after every round.  \n2. For each node, maintain Krichevsky\u2013Trofimov counts for the column player\u2019s C1/C2 choices. CTW computes, in O(k), the Bayesian mixture of all subtree models, giving a smoothed predictive probability p\u209c(C1) that captures both short- and long-range patterns (including periodicities and \u201ctit-for-tat\u201d echoes).  \n3. Action selection: choose Up when p\u209c\u00b7R_up+(1-p\u209c)\u00b7R_mis \u2265 p\u209c\u00b7R_mis+(1-p\u209c)\u00b7R_down; else Down.  \n4. Adaptation: apply an exponential decay \u03bb=0.995 to counts at every step so older contexts fade, letting the CTW react quickly to regime shifts without explicit change-point logic.  \n5. Exploration: when the weighted entropy of the root prediction exceeds 0.9 bits, flip the chosen action with 15 % probability to probe uncertain regimes.  \nDistinctiveness: CTW does not assume stationarity inside segments, Markov order, or parametric priors; it implicitly averages over all finite-order Markov models, capturing complex deterministic or stochastic opponent scripts that BOCPD with Beta-Bernoulli cannot.",
+  "score": 1.4395999908447266,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nfrom collections import defaultdict\n\ndef _init_globals():\n    # Called once on first import\n    row_strategy.k = 4                 # maximum context depth (<=8 requested)\n    row_strategy.decay = 0.995         # exponential forgetting for adaptation\n    row_strategy.tree = defaultdict(lambda: [0.5, 0.5])  # KT counts [c0,c1] (start 0.5 each)\n    row_strategy.last_history_len = 0  # how much of the current game we have processed\n\ndef _reset_game():\n    # Clears per-game information but keeps the global CTW tree\n    row_strategy.last_history_len = 0\n\ndef _update_ctw(history):\n    \"\"\"\n    Update KT counts for every suffix context up to depth k using the newest\n    (row, col) pair(s) not yet processed.  Apply decay to all stored counts\n    once per real turn for exponential forgetting.\n    \"\"\"\n    for idx in range(row_strategy.last_history_len, len(history)):\n        row_move, col_move = history[idx]\n\n        # Exponential decay\n        for counts in row_strategy.tree.values():\n            counts[0] *= row_strategy.decay\n            counts[1] *= row_strategy.decay\n\n        # Build symbol for this turn: we encode pair as (row<<1)|col (0-3)\n        symbol = (row_move << 1) | col_move\n\n        # Gather context of previous moves (up to k)\n        context = []\n        for depth in range(1, row_strategy.k + 1):\n            if idx - depth < 0:\n                break\n            prev_row, prev_col = history[idx - depth]\n            context.append((prev_row << 1) | prev_col)\n\n        # Insert counts for all suffixes (including empty context)\n        suffix = tuple(context)              # full context (depth \u2264k)\n        while True:\n            counts = row_strategy.tree[suffix]\n            counts[col_move] += 1            # update KT counts\n            if not suffix:\n                break\n            suffix = suffix[1:]              # drop oldest symbol\n\n    row_strategy.last_history_len = len(history)\n\ndef _predict_p0(history):\n    \"",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.4395999908447266}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 27
+}

@@ -1,0 +1,31 @@
+{
+  "node_id": "root_0_2",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Temperature sample 2",
+  "score": 0.8966044456793238,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.ensemble import GradientBoostingRegressor\nfrom sklearn.preprocessing import OneHotEncoder\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.metrics import r2_score\nimport warnings\nwarnings.filterwarnings('ignore')\n\n# Load data\ntrain = pd.read_csv('data/train.csv')\ntest = pd.read_csv('data/test.csv')\n\n# Define target and features\ntarget = 'SalePrice'\nfeatures = [col for col in train.columns if col != target]\n\n# Handle missing values\n# Fill categorical with mode, numerical with median\nfor col in features:\n    if train[col].dtype == 'object':\n        train[col] = train[col].fillna(train[col].mode()[0] if not train[col].mode().empty else 'Unknown')\n        test[col] = test[col].fillna(test[col].mode()[0] if not test[col].mode().empty else 'Unknown')\n    else:\n        train[col] = train[col].fillna(train[col].median())\n        test[col] = test[col].fillna(test[col].median())\n\n# Identify categorical and numerical columns\ncategorical_columns = train.select_dtypes(include=['object']).columns.tolist()\nnumerical_columns = [col for col in features if col not in categorical_columns]\n\n# Create preprocessing pipeline\npreprocessor = ColumnTransformer(\n    transformers=[\n        ('cat', OneHotEncoder(drop='first', handle_unknown='ignore'), categorical_columns),\n        ('num', 'passthrough', numerical_columns)\n    ]\n)\n\n# Split data\nX_train = train[features]\ny_train = train[target]\nX_test = test[features]\n\n# Train Gradient Boosting model\nmodel = Pipeline([\n    ('preprocessor', preprocessor),\n    ('regressor', GradientBoostingRegressor(n_estimators=200, learning_rate=0.1, max_depth=6, random_state=42))\n])\n\nmodel.fit(X_train, y_train)\n\n# Predict on test set\ntest_predictions = model.predict(X_test)\n\n# Create submission\nsubmission = pd.DataFrame({\n    'Id': test['Id'],\n    'SalePrice': test_predi",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Submission artefact not found. You have to produce a valid submission artefact as described in the task description to validate your results.",
+      "step": 1
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 2
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'rmse': 30340.111853413255, 'r2': 0.8799891474739243}\nEvaluation Score: {'rmse': 28161.63400821271, 'r2': 0.8966044456793238}",
+      "step": 3
+    }
+  ],
+  "conversation_length": 25
+}

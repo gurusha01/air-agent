@@ -1,0 +1,26 @@
+{
+  "node_id": "root_1_0_0",
+  "parent_id": "root_1_0",
+  "depth": 3,
+  "strategy": "improve: You are an ML research agent working on a task.",
+  "score": 0.8986116180362574,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.preprocessing import StandardScaler\nfrom sklearn.ensemble import StackingRegressor\nfrom sklearn.linear_model import RidgeCV\nfrom sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor\nfrom sklearn.metrics import r2_score\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.pipeline import make_pipeline\n\n# Load data\ntrain_data = pd.read_csv('data/train.csv')\ntest_data = pd.read_csv('data/test.csv')\n\n# Separate features and target\nX = train_data.drop(['SalePrice'], axis=1)\ny = train_data['SalePrice']\n\n# Preprocessing\n# Impute missing values with median for numerical and most frequent for categorical\nnum_features = X.select_dtypes(include=[np.number]).columns\ncat_features = X.select_dtypes(exclude=[np.number]).columns\n\n# Create pipelines for different types of features\nnum_pipeline = make_pipeline(SimpleImputer(strategy='median'), StandardScaler())\ncat_pipeline = make_pipeline(SimpleImputer(strategy='most_frequent'), pd.get_dummies)\n\n# Impute and scale numerical features\nX[num_features] = num_pipeline.fit_transform(X[num_features])\n\n# Impute and one-hot encode categorical features\nX = pd.get_dummies(X, columns=cat_features)\n\n# Ensure the test data has the same features\ntest_data[num_features] = num_pipeline.transform(test_data[num_features])\ntest_data = pd.get_dummies(test_data, columns=cat_features)\nX, test_data = X.align(test_data, join='left', axis=1, fill_value=0)\n\n# Define base models for stacking\nbase_models = [\n    ('rf', RandomForestRegressor(n_estimators=100, random_state=42)),\n    ('gbr', GradientBoostingRegressor(n_estimators=100, random_state=42))\n]\n\n# Define stacking model\nstacking_model = StackingRegressor(\n    estimators=base_models,\n    final_estimator=RidgeCV()\n)\n\n# Train the model\nstacking_model.fit(X, y)\n\n# Predict on test data\ntest_data['SalePrice'] = stacking_model.predict(test_data)\n\n",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'rmse': 30340.111853413255, 'r2': 0.8799891474739243}\nEvaluation Score: {'rmse': 27886.949694808733, 'r2': 0.8986116180362574}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9
+}

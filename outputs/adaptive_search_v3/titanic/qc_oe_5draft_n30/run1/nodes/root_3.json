@@ -1,0 +1,27 @@
+{
+  "node_id": "root_3",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Implement a Random Forest classifier with hyperparameter tuning using GridSearchCV.",
+  "score": 0.84688995215311,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nfrom sklearn.model_selection import train_test_split, GridSearchCV\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.metrics import make_scorer, accuracy_score\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.preprocessing import OneHotEncoder, StandardScaler\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.pipeline import Pipeline\n\n# Load data\ntrain_df = pd.read_csv('data/train.csv')\ntest_df = pd.read_csv('data/test.csv')\n\n# Preprocess data\nnumerical_cols = ['Age', 'SibSp', 'Parch', 'Fare']\ncategorical_cols = ['Pclass', 'Sex', 'Embarked']\n\nnumeric_transformer = Pipeline(steps=[\n    ('imputer', SimpleImputer(strategy='median')),\n    ('scaler', StandardScaler())])\n\ncategorical_transformer = Pipeline(steps=[\n    ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),\n    ('onehot', OneHotEncoder(handle_unknown='ignore'))])\n\npreprocessor = ColumnTransformer(\n    transformers=[\n        ('num', numeric_transformer, numerical_cols),\n        ('cat', categorical_transformer, categorical_cols)])\n\n# Define the model\nmodel = RandomForestClassifier()\n\n# Create the pipeline\nclf = Pipeline(steps=[('preprocessor', preprocessor),\n                      ('classifier', model)])\n\n# Split data\nX_train = train_df.drop(['PassengerId', 'Survived'], axis=1)\ny_train = train_df['Survived']\n\n# Define parameter grid\nparam_grid = {\n    'classifier__n_estimators': [50, 100, 200],\n    'classifier__max_depth': [None, 10, 20, 30],\n    'classifier__min_samples_split': [2, 5, 10]\n}\n\n# Set up scoring\naccuracy_scorer = make_scorer(accuracy_score)\n\n# Grid search\ngrid_search = GridSearchCV(clf, param_grid, cv=5, scoring=accuracy_scorer)\ngrid_search.fit(X_train, y_train)\n\n# Make predictions\nX_test = test_df.drop('PassengerId', axis=1)\npredictions = grid_search.predict(X_test)\n\n# Save submission\nsubmission = pd.DataFrame({\n    'PassengerId': test_df['PassengerId'],\n    'Survived': predictions\n})\nsubmis",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.84688995215311}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9,
+  "reflection": null
+}

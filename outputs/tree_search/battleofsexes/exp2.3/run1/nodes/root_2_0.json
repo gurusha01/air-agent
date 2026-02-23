@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "Increase the memory window from 3 to 5 previous rounds to capture more historical patterns in opponent behavior. This allows for a smoother estimation of opponent preferences over time, improving the accuracy of the mixing probability adjustment. However, to prevent overfitting, keep the adjustment magnitude at 10% and apply a moving average of the observed actions over the 5-round window to stabilize the estimate. This variation provides a more robust signal for long-term trends without sacrificing stability.",
+  "score": 0.7364400625228882,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 5:\n        # In the beginning, use a balanced mix to avoid predictability\n        return random.choice([0, 1])\n    \n    # Extract the last 5 rounds\n    recent_moves = history[-5:]\n    my_moves = [move for _, move in recent_moves]\n    their_moves = [move for move, _ in recent_moves]\n    \n    # Base strategy: random 50/50 (to avoid predictability)\n    base_prob = 0.5\n    \n    # Use a moving average to estimate opponent's behavior over the last 5 rounds\n    # Count how often they matched my move\n    match_count = sum(1 for i in range(5) if my_moves[i] == their_moves[i])\n    \n    # Adjust probability based on match frequency\n    # If they matched often, they're copying \u2014 so avoid repeating\n    # If they didn't match, they're unpredictable \u2014 so stay consistent\n    adjustment = 0.1 * (1 - match_count / 5)  # 10% adjustment per mismatch\n    \n    # Adjust probability: increase chance of 0 if they match often (they copy)\n    prob_0 = base_prob + adjustment\n    prob_1 = 1 - prob_0\n    \n    # Cap probabilities between 0 and 1\n    prob_0 = max(0.0, min(1.0, prob_0))\n    prob_1 = max(0.0, min(1.0, prob_1))\n    \n    return 0 if random.random() < prob_0 else 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.7364400625228882}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

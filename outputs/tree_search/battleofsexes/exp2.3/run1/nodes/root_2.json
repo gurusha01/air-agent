@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Apply a limited memory window of 3 previous rounds to dynamically adjust the mixing probabilities\u2014using the observed opponent actions in those rounds to inform the current choice, but only applying a 10% adjustment to the base mixing probability to avoid overfitting.",
+  "score": 0.7463200092315674,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 3:\n        # In the beginning, use a balanced mix to avoid predictability\n        return random.choice([0, 1])\n    \n    # Extract the last 3 rounds\n    recent_moves = history[-3:]\n    my_moves = [move for _, move in recent_moves]\n    their_moves = [move for move, _ in recent_moves]\n    \n    # Base strategy: random 50/50 (to avoid predictability)\n    base_prob = 0.5\n    \n    # Count how often they matched my move in the last 3 rounds\n    match_count = sum(1 for i in range(3) if my_moves[i] == their_moves[i])\n    \n    # Adjust probability based on match frequency\n    # If they matched often, they're copying \u2014 so avoid repeating\n    # If they didn't match, they're unpredictable \u2014 so stay consistent\n    adjustment = 0.1 * (1 - match_count / 3)  # 10% adjustment per mismatch\n    \n    # Adjust probability: increase chance of 0 if they match often (they copy)\n    prob_0 = base_prob + adjustment\n    prob_1 = 1 - prob_0\n    \n    # Cap probabilities between 0 and 1\n    prob_0 = max(0.0, min(1.0, prob_0))\n    prob_1 = max(0.0, min(1.0, prob_1))\n    \n    return 0 if random.random() < prob_0 else 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.7463200092315674}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 7
+}

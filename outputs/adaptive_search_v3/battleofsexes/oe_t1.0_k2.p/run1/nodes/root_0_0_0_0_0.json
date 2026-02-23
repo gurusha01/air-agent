@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_0_0_0_0",
+  "parent_id": "root_0_0_0_0",
+  "depth": 5,
+  "strategy": "Use a Transformer-based model with self-attention over the sequence of column player choices, where each token is a one-hot encoded choice from the last 15 rounds. Instead of relying on LSTM dynamics, the Transformer captures long-range dependencies through cross-attention between past choices and current payoff trends. The model is trained to predict the row player's optimal choice by minimizing a weighted loss that includes both immediate payoff and a regularization term penalizing repeated choices when the column player shows consistency. The output is a probability distribution over \"Home\" and \"Away\", with a fixed temperature of 0.7 to ensure exploration. The policy switches to the opposite choice if the column player's choice in the previous two rounds was the same, but only if the attention weights show high focus on early rounds (indicating a pattern). This strategy leverages attention mechanisms to detect subtle behavioral shifts.",
+  "score": 1.441100001335144,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport math\n\ndef row_strategy(history):\n    if len(history) < 15:\n        return 0\n    \n    # Extract last 15 column player moves\n    their_moves = [their_move for _, their_move in history[-15:]]\n    \n    # Check if last two choices were the same (consistency pattern)\n    if len(their_moves) >= 2 and their_moves[-2] == their_moves[-1]:\n        # Only switch if attention weights show high focus on early rounds (simulated via pattern)\n        # Simulate \"high focus on early rounds\" by checking if recent choices are repeating\n        pattern_strength = sum(1 for i in range(1, len(their_moves)-1) \n                               if their_moves[i] == their_moves[i-1]) / (len(their_moves) - 1)\n        \n        # If strong repeating pattern, switch to avoid predictability\n        if pattern_strength > 0.4:\n            return 1 - their_moves[-1]  # Opposite of last move\n    \n    # Base probability: proportion of 1s (Home) in the sequence\n    home_freq = sum(1 for move in their_moves if move == 1) / len(their_moves)\n    \n    # Add a small bias toward 0 (since row player prefers 0)\n    prob_choose_0 = 0.5 + 0.5 * home_freq\n    \n    # Apply temperature to encourage exploration (0.7 = moderate exploration)\n    prob_choose_0 = prob_choose_0 * 0.7 + 0.15  # Slight shift to favor 0\n    \n    # Clamp to valid range\n    prob_choose_0 = max(0.0, min(1.0, prob_choose_0))\n    \n    if random.random() < prob_choose_0:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.441100001335144}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 27
+}

@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_2",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Introduce a time-dependent smoothing parameter: after every 5 rounds, recompute the opponent's action frequency using an exponential moving average (EMA) with a decay rate of 0.1. This ensures that the mixing strategy gradually adjusts to new patterns without sudden shifts. The final strategy uses 65% probability on the dominant recent action and 35% on the alternative, with EMA smoothing applied to prevent overfitting to noise.",
+  "score": 0.5012200474739075,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Extract opponent's moves\n    opponent_moves = [move for _, move in history]\n    \n    # Use exponential moving average (EMA) with decay rate 0.1\n    # Initialize EMA values\n    ema_ones = 0.0\n    ema_zeros = 0.0\n    \n    # Update EMA for each opponent move\n    for move in opponent_moves:\n        ema_ones = 0.9 * ema_ones + 0.1 * (1 if move == 1 else 0)\n        ema_zeros = 0.9 * ema_zeros + 0.1 * (1 if move == 0 else 0)\n    \n    # After every 5 rounds, recompute EMA (but we apply EMA continuously)\n    # Use EMA values to determine dominant action\n    if ema_ones > ema_zeros:\n        # Opponent tends to choose 1 \u2192 respond with 0\n        return 0\n    elif ema_zeros > ema_ones:\n        # Opponent tends to choose 0 \u2192 respond with 1\n        return 1\n    else:\n        # Equal EMA \u2192 random with bias toward 0 (we prefer 0)\n        return random.choices([0, 1], weights=[65, 35])[0]\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.5012200474739075}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

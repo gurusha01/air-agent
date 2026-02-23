@@ -1,0 +1,26 @@
+{
+  "node_id": "root_2",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Temperature sample 2",
+  "score": 0.8564593301435407,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.ensemble import GradientBoostingClassifier\nfrom sklearn.preprocessing import LabelEncoder\nfrom sklearn.model_selection import train_test_split\nimport warnings\nwarnings.filterwarnings('ignore')\n\n# Load data\ntrain_df = pd.read_csv('data/train.csv')\ntest_df = pd.read_csv('data/test.csv')\n\n# Drop non-numeric, non-useful columns: Name, Ticket, Cabin\nX_train = train_df.drop(['PassengerId', 'Survived', 'Name', 'Ticket', 'Cabin'], axis=1)\ny_train = train_df['Survived']\n\n# Handle missing values\nX_train['Age'].fillna(X_train['Age'].median(), inplace=True)\nX_train['Fare'].fillna(X_train['Fare'].median(), inplace=True)\nX_train['Embarked'].fillna(X_train['Embarked'].mode()[0], inplace=True)\n\n# Encode categorical variables\nle_sex = LabelEncoder()\nle_embarked = LabelEncoder()\n\nX_train['Sex'] = le_sex.fit_transform(X_train['Sex'])\nX_train['Embarked'] = le_embarked.fit_transform(X_train['Embarked'])\n\n# Prepare test data\nX_test = test_df.drop(['PassengerId', 'Name', 'Ticket', 'Cabin'], axis=1)\n\n# Handle missing values in test data\nX_test['Age'].fillna(X_test['Age'].median(), inplace=True)\nX_test['Fare'].fillna(X_test['Fare'].median(), inplace=True)\nX_test['Embarked'].fillna(X_test['Embarked'].mode()[0], inplace=True)\n\n# Encode categorical variables in test data\nX_test['Sex'] = le_sex.transform(X_test['Sex'])\nX_test['Embarked'] = le_embarked.transform(X_test['Embarked'])\n\n# Train model with Gradient Boosting (often performs better than Random Forest on tabular data)\nmodel = GradientBoostingClassifier(n_estimators=200, learning_rate=0.1, max_depth=3, random_state=42)\nmodel.fit(X_train, y_train)\n\n# Predict\ny_pred = model.predict(X_test)\n\n# Create submission\nsubmission = pd.DataFrame({\n    'PassengerId': test_df['PassengerId'],\n    'Survived': y_pred\n})\n\nsubmission.to_csv('submission.csv', index=False)\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.8564593301435407}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 29
+}

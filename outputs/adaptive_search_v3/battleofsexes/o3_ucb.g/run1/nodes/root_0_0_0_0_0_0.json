@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_0_0_0_0_0",
+  "parent_id": "root_0_0_0_0_0",
+  "depth": 6,
+  "strategy": "Ensemble-of-Experts with Online Hedge  \n1. Expert library: create ~25 deterministic/reactive experts that cover common BOS heuristics \u2013 e.g. Always-Up, Always-Down, Win-Stay-Lose-Shift, Tit-for-Tat, length-2/3/4 cycle predictors, \u201cplay the action that made the opponent mismatch k steps ago\u201d (k=1\u20264), etc.  \n2. Each expert outputs the action it would play this round.  \n3. Maintain a weight w\u1d62\u209c for each expert. After observing the realised payoff r\u209c, update via multiplicative weights: w\u1d62\u209c\u208a\u2081 = w\u1d62\u209c\u00b7exp(\u03b7\u00b7r\u1d62\u209c) where r\u1d62\u209c is the counterfactual payoff that expert i would have earned (\u03b7\u22480.07 tuned on validation seeds). Normalise weights after every round.  \n4. Action selection: sample one expert proportionally to w\u1d62 and execute its recommendation (Thompson-like). This preserves exploration automatically; no extra \u03b5-greedy needed.  \n5. Adaptive forgetting: multiply all weights by \u03b3=0.98 each turn to let new evidence quickly override stale patterns, giving sharp regime-shift response without explicit change-point detection.  \nWhy different? No probabilistic model of the opponent at all; it is meta-learning over a heterogeneous policy set with regret \u2264\u03b7\u207b\u00b9ln|E|. It exploits structured but non-Markovian scripts faster than CTW because a single matching expert will dominate in O(log|E|/\u0394) rounds, and even against noisy opponents the mixture approximates the Bayes-optimal action.  \nImplementation is O(|E|) per step (~25 ops), simpler than CTW and highly parallelisable.",
+  "score": 0.9522700309753418,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nfrom collections import defaultdict\n\n# ---------------- Expert definitions ---------------- #\ndef always_0(h):                   # Expert 0\n    return 0\n\ndef always_1(h):                   # Expert 1\n    return 1\n\ndef tit_for_tat(h):                # Expert 2\n    return 0 if len(h) == 0 else h[-1][1]\n\ndef anti_tit_for_tat(h):           # Expert 3\n    return 1 if len(h) == 0 else 1 - h[-1][1]\n\ndef win_stay_lose_shift(h):        # Expert 4\n    if len(h) == 0:\n        return 0\n    my_last, opp_last = h[-1]\n    return my_last if my_last == opp_last else 1 - my_last\n\ndef cycle_01(h):                   # Expert 5\n    return len(h) % 2\n\ndef two_back(h):                   # Expert 6\n    return 0 if len(h) < 2 else h[-2][0]\n\ndef opp_majority_last3(h):         # Expert 7\n    if len(h) == 0:\n        return 0\n    last3 = [opp for _, opp in h[-3:]]\n    return 0 if last3.count(0) >= last3.count(1) else 1\n\ndef opp_second_last(h):            # Expert 8\n    return 0 if len(h) < 2 else h[-2][1]\n\nEXPERTS = [\n    always_0, always_1, tit_for_tat, anti_tit_for_tat,\n    win_stay_lose_shift, cycle_01, two_back,\n    opp_majority_last3, opp_second_last\n]\nN_EXPERTS = len(EXPERTS)\n\n# ---------------- Strategy (Online Hedge) ---------------- #\ndef _game_reset():\n    \"\"\"Reset per-game data.\"\"\"\n    row_strategy.weights = [1.0] * N_EXPERTS    # expert weights\n    row_strategy.last_updated_len = 0           # history length already rewarded\n    row_strategy.eta = 0.07                     # learning rate\n    row_strategy.gamma = 0.98                   # forgetting factor\n\ndef _update_weights(history):\n    \"\"\"Hedge update using the outcome of the latest round.\"\"\"\n    if len(history) == 0 or row_strategy.last_updated_len == len(history):\n        return  # nothing new to update\n\n    # Evaluate experts on history excluding the last round\n    prev_hist = history[:-1]\n    opp_move = history[-1][1]\n\n    # Counterfactual reward for each expert\n    new_weights =",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.9522700309753418}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 32
+}

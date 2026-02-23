@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Use a mixed strategy where the row player chooses 'Coordination' with probability 0.6 and 'Conflict' with probability 0.4, based on a simple time-series memory of the opponent's past moves. The model learns to adjust the probability dynamically by tracking the opponent's historical choices over a 3-period window, applying a moving average to update the strategy. This introduces a behavioral component that mimics adaptive learning in real-world interactions.",
+  "score": 0.6809799671173096,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 3:\n        # Early game: random choice with slight bias toward 0 (since we prefer 0)\n        return random.choices([0, 1], weights=[0.7, 0.3])[0]\n    \n    # Extract the last 3 opponent moves\n    their_moves = [move for _, move in history[-3:]]\n    \n    # Simple moving average of their moves (0.5 weight on each)\n    avg_move = sum(their_moves) / len(their_moves)\n    \n    # If opponent has chosen 1 more than 0 in the last 3 moves, we shift toward 0\n    # If opponent has chosen 0 more than 1, we shift toward 1\n    if avg_move > 0.6:\n        # Opponent is leaning toward 1 \u2192 we counter with 0\n        return random.choices([0, 1], weights=[0.7, 0.3])[0]\n    elif avg_move < 0.4:\n        # Opponent is leaning toward 0 \u2192 we counter with 1\n        return random.choices([0, 1], weights=[0.3, 0.7])[0]\n    else:\n        # Balanced \u2014 use random with slight bias to 0\n        return random.choices([0, 1], weights=[0.6, 0.4])[0]\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.6809799671173096}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 7,
+  "reflection": null
+}

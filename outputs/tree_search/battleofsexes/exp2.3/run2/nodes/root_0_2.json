@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_2",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Variation 3: Apply a moving average filter to the observed payoff differences before feeding them into the sigmoid function. This smooths out short-term fluctuations in observed payoffs due to noise or randomness, leading to a more stable and consistent input signal. A 3-round moving average is used to reduce volatility while preserving the trend in the payoff difference.",
+  "score": 1.209089994430542,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport numpy as np\n\ndef row_strategy(history):\n    if len(history) < 3:\n        # Use initial strategy when not enough history\n        return 0\n    \n    # Extract the last 3 moves of the opponent to compute moving average\n    their_moves = [entry[1] for entry in history[-3:]]\n    \n    # Compute the payoff difference over the last 3 rounds\n    # If opponent chose 0, choosing 0 gives 2, choosing 1 gives 0\n    # If opponent chose 1, choosing 0 gives 0, choosing 1 gives 1\n    payoff_differences = []\n    for move in their_moves:\n        if move == 0:\n            payoff_diff = 2 - 0  # 0 gives 2, 1 gives 0\n        else:\n            payoff_diff = 0 - 1  # 0 gives 0, 1 gives 1\n        payoff_differences.append(payoff_diff)\n    \n    # Apply 3-round moving average to smooth the payoff differences\n    moving_avg = np.mean(payoff_differences)\n    \n    # Sigmoid function to convert smoothed difference into probability\n    prob_choose_0 = 1 / (1 + np.exp(-moving_avg))\n    \n    # Random choice based on probability\n    if random.random() < prob_choose_0:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.209089994430542}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

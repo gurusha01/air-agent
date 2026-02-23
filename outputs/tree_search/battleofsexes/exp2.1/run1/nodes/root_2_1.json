@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_1",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "Apply a contextual bandit approach where the row player treats each interaction as a trial in a stochastic environment. The state is defined by the column player's recent history of choices (e.g., last 3 moves), and the row player maintains a separate exploration rate for each context. A linear reward model with feature vectors (e.g., \"last choice was Cooperate\", \"number of previous rounds\") is used to predict payoffs, and the player chooses the action with the highest estimated reward, balancing exploration and exploitation.",
+  "score": 0.49748003482818604,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return random.randint(0, 1)\n    \n    # Define recent history window (last 3 moves)\n    recent_their_moves = [move for _, move in history][-3:] if len(history) >= 3 else [0, 0, 0]\n    \n    # Feature vector for context: use last 3 moves as context\n    # Features: last move, second last move, third last move, and move count\n    features = [\n        recent_their_moves[-1],  # last move\n        recent_their_moves[-2] if len(recent_their_moves) >= 2 else 0,  # second last\n        recent_their_moves[-3] if len(recent_their_moves) >= 3 else 0,  # third last\n        len(history) % 10,  # round number mod 10 (periodic signal)\n    ]\n    \n    # Reward model: linear prediction of expected payoff\n    # Payoff for choosing 0: 2 if opponent chooses 0, 0 otherwise\n    # Payoff for choosing 1: 2 if opponent chooses 1, 0 otherwise\n    # So expected payoff for action a is: 2 * (probability opponent chooses a)\n    \n    # We model opponent's choice probability as a linear function of features\n    # Weights learned from past interactions (simple heuristic weights)\n    # This is a simplified bandit-style model with hand-tuned weights\n    \n    # Weighted prediction for choosing 0\n    weight_0 = 0.3\n    weight_1 = 0.4\n    weight_last_0 = 0.2\n    weight_last_1 = 0.1\n    \n    prob_opponent_0 = (\n        weight_0 * features[0] +\n        weight_1 * features[1] +\n        weight_last_0 * features[2] +\n        0.1 * (features[3] % 5)\n    ) / 10.0\n    \n    prob_opponent_1 = 1.0 - prob_opponent_0\n    \n    # Expected payoff for choosing 0: 2 * prob_opponent_0\n    # Expected payoff for choosing 1: 2 * prob_opponent_1\n    expected_0 = 2 * prob_opponent_0\n    expected_1 = 2 * prob_opponent_1\n    \n    # Choose action with higher expected payoff\n    if expected_0 > expected_1:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.49748003482818604}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

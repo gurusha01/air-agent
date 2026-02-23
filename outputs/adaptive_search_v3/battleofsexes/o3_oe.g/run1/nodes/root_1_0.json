@@ -1,0 +1,21 @@
+{
+  "node_id": "root_1_0",
+  "parent_id": "root_1",
+  "depth": 2,
+  "strategy": "First-order Markov predictor with Dirichlet-TS.  \n1. Track four transition counts N(op_prev\u2192op_now) for the opponent: OO, OF, FO, FF (O = Opera, F = Football). Start each with \u03b1=\u03b2=1 (Dirichlet(1,1)).  \n2. After every round, update the two counts that correspond to the realised predecessor/successor pair.  \n3. At the next turn, look at the opponent\u2019s last move x\u209c\u208b\u2081. Draw \u03b8_O, \u03b8_F from the Beta posterior for the row (x\u209c\u208b\u2081\u2192O) and (x\u209c\u208b\u2081\u2192F). This yields a TS sample of \u201cprobability that the opponent switches to Opera/Football given what he just played.\u201d  \n4. Pick the row action that maximises expected payoff under (\u03b8_O, \u03b8_F).  \n5. Adaptivity: every 50 steps shrink all counts toward the prior by multiplying by 0.95, so sudden behavioural shifts are captured quickly.  \nWhy different: uses a conditional (Markov) model instead of i.i.d. frequency, exploiting that many real opponents alternate patterns (e.g., OFOF\u2026) which Beta-Bernoulli cannot capture. The extra bit of short-term memory increases predictive power with negligible computation.  \nImplementation is two lines added to the current code base; empirically improves reward against pattern players and remains optimal versus stationary ones.",
+  "score": 1.231429934501648,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    \"\"\"\n    First-order Markov Thompson-Sampling strategy.\n    1. Maintain Dirichlet(1,1) priors over the opponent\u2019s next move\n       conditional on their previous move (OO, OF, FO, FF counts).\n    2. Update counts from the last \u226450 transitions (forgetting older data).\n    3. Sample the conditional probability \u03b8 that the opponent will play 0.\n    4. Play 0 if the expected payoff (2\u00b7\u03b8) exceeds that of playing 1 (1\u00b7(1\u2212\u03b8)),\n       i.e., when \u03b8 \u2265 1/3; otherwise play 1.\n    \"\"\"\n    # If no history yet, start with our preferred action 0.\n    if not history:\n        return 0\n\n    # Dirichlet(1,1) priors for each conditional transition.\n    counts = {(0, 0): 1.0, (0, 1): 1.0, (1, 0): 1.0, (1, 1): 1.0}\n\n    # Look at only the most recent 50 transitions for adaptability.\n    start_idx = max(0, len(history) - 50)\n    for i in range(start_idx, len(history) - 1):\n        prev_op = history[i][1]\n        next_op = history[i + 1][1]\n        counts[(prev_op, next_op)] += 1.0\n\n    last_op = history[-1][1]  # Opponent\u2019s most recent move\n\n    alpha_0 = counts[(last_op, 0)]\n    alpha_1 = counts[(last_op, 1)]\n\n    # Thompson-sample the chance the opponent now plays 0.\n    theta_0 = random.betavariate(alpha_0, alpha_1)\n\n    # Expected payoffs: play 0 \u21d2 2\u00b7\u03b8, play 1 \u21d2 1\u00b7(1\u2212\u03b8)\n    return 0 if theta_0 >= 1 / 3 else 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.231429934501648}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

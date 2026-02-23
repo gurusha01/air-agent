@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Adjust the signal-to-noise ratio in the payoff estimation by applying a 10% Gaussian smoothing filter to the observed historical interactions before computing the expected payoff. This reduces erratic fluctuations in the row player's perceived preferences and stabilizes the average payoff calculation during repeated play.",
+  "score": 1.4417001008987427,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport numpy as np\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Convert history to numpy array for easier manipulation\n    moves = np.array([[m[0], m[1]] for m in history])\n    \n    # Extract your moves and their moves\n    your_moves = moves[:, 0]\n    their_moves = moves[:, 1]\n    \n    # Apply 10% Gaussian smoothing to the observed historical interactions\n    # We smooth the expected payoff by averaging over a window (simple moving average)\n    # Since we don't have a true Gaussian filter, we use a simple moving average with a small window\n    window_size = 3\n    smoothed_your_moves = np.convolve(your_moves, np.ones(window_size)/window_size, mode='valid')\n    smoothed_their_moves = np.convolve(their_moves, np.ones(window_size)/window_size, mode='valid')\n    \n    # Predict their move based on your move history (with smoothing)\n    # If your move was 0, their move tends to follow your last move (80% chance)\n    # So we use a smoothed version of your last move as a signal\n    \n    # If history is too short, default to 0\n    if len(smoothed_your_moves) == 0:\n        return 0\n    \n    # Predict their move based on smoothed your move\n    last_smoothed_your_move = smoothed_your_moves[-1]\n    \n    # Since opponent copies with 80% probability, we anticipate their move\n    # If last smoothed move was 0, they will copy 0 with 80% chance, 1 with 20%\n    # If last smoothed move was 1, they will copy 1 with 80% chance, 0 with 20%\n    \n    # We predict their move as a probabilistic function of your move\n    # But since we are only returning 0 or 1, we use a threshold\n    # We aim to avoid the (0,1) or (1,0) payoff which gives 0 to both\n    # So we try to match their likely move\n    \n    if last_smoothed_your_move == 0:\n        # They copy 0 with 80% chance, 1 with 20%\n        # To maximize payoff, we pick 0 (to get (2,1))\n        return 0\n    else:\n        # They copy 1 with 80% chance, 0 with 20%\n      ",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.4417001008987427}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 7
+}

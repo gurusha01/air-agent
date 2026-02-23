@@ -1,0 +1,36 @@
+{
+  "node_id": "root_2_0_0_0",
+  "parent_id": "root_2_0_0",
+  "depth": 4,
+  "strategy": "Strategy: Text-augmented Gradient Boosting Ensemble\n\n1. Rich text features  \n   \u2022 Feed the raw \u201cName\u201d string (incl. titles, honorifics, aliases) through a small Sentence-BERT (MiniLM) to obtain a 384-dim semantic vector capturing social status and family ties that aren\u2019t explicit in structured columns.  \n   \u2022 Run a character-level CNN over \u201cTicket\u201d and \u201cCabin\u201d fields to extract patterns (shared prefixes, cabin side, even/odd numbers) \u2192 64-dim vector each.  \n   \u2022 Concatenate with classical numeric features; no group aggregation is used\u2014model stays purely instance-level.\n\n2. Model ensemble  \n   \u2022 Train three independent tree boosters with different biases: CatBoost (ordered target encoding for categoricals), LightGBM (goss + monotone constraints on \u201cPclass\u201d \u2265 survival), and XGBoost (hist).  \n   \u2022 For each booster, perform 20-fold bagging with random 80 % row/feature subsampling and early stopping on log-loss.  \n   \u2022 Stack their out-of-fold predictions using a calibrated logistic regression meta-learner (Platt scaling).\n\n3. Regularization & calibration  \n   \u2022 Add 2 % label noise to prevent overfitting high-status titles.  \n   \u2022 Post-training isotonic regression on the validation blend for well-calibrated probabilities.\n\nWhy different  \n   Pure gradient-boosted trees augmented with transformer/CNN text embeddings\u2014no set or graph modelling. Exploits unstructured textual clues the current MIL transformer ignores, providing an orthogonal information channel.\n\nExpected lift: +0.004\u20130.012 LB after ensembling and calibration.",
+  "score": 0.868421052631579,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.feature_extraction.text import TfidfVectorizer\nfrom scipy.sparse import hstack, csr_matrix\nfrom xgboost import XGBClassifier\n\n# -------------------- Load data -------------------- #\ntrain_df = pd.read_csv('data/train.csv')\ntest_df  = pd.read_csv('data/test.csv')\ntest_ids = test_df['PassengerId']\n\n# -------------------- Combine for uniform preprocessing -------------------- #\ntrain_df['is_train'] = 1\ntest_df['is_train']  = 0\nfull_df = pd.concat([train_df, test_df], ignore_index=True)\n\n# -------------------- Structured Feature Engineering -------------------- #\n# Title from Name\nfull_df['Title'] = full_df['Name'].apply(lambda n: n.split(',')[1].split('.')[0].strip())\ncommon_titles = ['Mr', 'Miss', 'Mrs', 'Master']\nfull_df['Title'] = full_df['Title'].apply(lambda t: t if t in common_titles else 'Rare')\n\n# Family features\nfull_df['FamilySize'] = full_df['SibSp'] + full_df['Parch'] + 1\nfull_df['IsAlone']    = (full_df['FamilySize'] == 1).astype(int)\n\n# Cabin deck\nfull_df['CabinDeck'] = full_df['Cabin'].fillna('Unknown').apply(lambda x: str(x)[0])\n\n# Ticket group size\nticket_counts = full_df['Ticket'].value_counts()\nfull_df['TicketGroupSize'] = full_df['Ticket'].map(ticket_counts)\n\n# Fill missing values\nfull_df['Embarked'] = full_df['Embarked'].fillna(full_df['Embarked'].mode()[0])\nfull_df['Fare']     = full_df['Fare'].fillna(full_df.groupby('Pclass')['Fare'].transform('median'))\nfull_df['Age']      = full_df['Age'].fillna(full_df.groupby(['Title','Pclass'])['Age'].transform('median'))\nfull_df['Age']      = full_df['Age'].fillna(full_df['Age'].median())\n\n# Binning\nfull_df['AgeBand']  = pd.cut(full_df['Age'], bins=[0,12,20,40,60,80], labels=['Child','Teen','Adult','Middle','Senior'])\nfull_df['FareBand'] = pd.qcut(full_df['Fare'], 4, labels=['VL','L','M','H'])\n\n# Select structured columns for one-hot\ndrop_cols   = ['PassengerId',",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Traceback (most recent call last):\n  File \"/home/agent/workspace/train_and_predict.py\", line 93, in <module>\n    model.fit(\n  File \"/home/agent/miniconda3/envs/mlgym_generic/lib/python3.11/site-packages/xgboost/core.py\", line 751, in inner_f\n    return func(**kwargs)\n           ^^^^^^^^^^^^^^\nTypeError: XGBClassifier.fit() got an unexpected keyword argument 'early_stopping_rounds'",
+      "step": 1
+    },
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.feature_extraction.text import TfidfVectorizer\nfrom scipy.sparse import hstack, csr_matrix\nfrom xgboost import XGBClassifier\n\n# -------------------- Load data -------------------- #\ntrain_df = pd.read_csv('data/train.csv')\ntest_df  = pd.read_csv('data/test.csv')\ntest_ids = test_df['PassengerId']\n\n# -------------------- Combine for uniform preprocessing -------------------- #\ntrain_df['is_train'] = 1\ntest_df['is_train']  = 0\nfull_df = pd.concat([train_df, test_df], ignore_index=True)\n\n# -------------------- Structured Feature Engineering -------------------- #\n# Title from Name\nfull_df['Title'] = full_df['Name'].apply(lambda n: n.split(',')[1].split('.')[0].strip())\ncommon_titles = ['Mr', 'Miss', 'Mrs', 'Master']\nfull_df['Title'] = full_df['Title'].apply(lambda t: t if t in common_titles else 'Rare')\n\n# Family features\nfull_df['FamilySize'] = full_df['SibSp'] + full_df['Parch'] + 1\nfull_df['IsAlone']    = (full_df['FamilySize'] == 1).astype(int)\n\n# Cabin deck\nfull_df['CabinDeck'] = full_df['Cabin'].fillna('Unknown').apply(lambda x: str(x)[0])\n\n# Ticket group size\nticket_counts = full_df['Ticket'].value_counts()\nfull_df['TicketGroupSize'] = full_df['Ticket'].map(ticket_counts)\n\n# Fill missing values\nfull_df['Embarked'] = full_df['Embarked'].fillna(full_df['Embarked'].mode()[0])\nfull_df['Fare']     = full_df['Fare'].fillna(full_df.groupby('Pclass')['Fare'].transform('median'))\nfull_df['Age']      = full_df['Age'].fillna(full_df.groupby(['Title','Pclass'])['Age'].transform('median'))\nfull_df['Age']      = full_df['Age'].fillna(full_df['Age'].median())\n\n# Binning\nfull_df['AgeBand']  = pd.cut(full_df['Age'], bins=[0,12,20,40,60,80], labels=['Child','Teen','Adult','Middle','Senior'])\nfull_df['FareBand'] = pd.qcut(full_df['Fare'], 4, labels=['VL','L','M','H'])\n\n# Select structured columns for one-hot\ndrop_cols   = ['PassengerId',",
+      "observation": "Action executed.",
+      "step": 2
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 3
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.868421052631579}",
+      "step": 4
+    }
+  ],
+  "conversation_length": 50
+}

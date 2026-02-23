@@ -1,0 +1,21 @@
+{
+  "node_id": "root_1_0",
+  "parent_id": "root_1",
+  "depth": 2,
+  "strategy": "Variation: Introduce a decaying confidence window for past matches. Instead of adding a fixed 10% boost per consecutive matching round, apply a 10% increase only to the most recent 3 consecutive rounds, with a 20% decay factor for rounds older than 3. This limits overfitting to distant patterns while still rewarding recent alignment. For example, if the opponent matched the prediction in rounds 2, 3, and 4, the confidence boost is applied with full weight; if matches spanned rounds 1, 2, 3, 4, 5, only rounds 2\u20134 contribute, and round 1 is discounted. This maintains responsiveness to short-term patterns while reducing sensitivity to outdated data.",
+  "score": 1.2302000522613525,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Decaying confidence window: only consider last 3 rounds for matching\n    if len(history) <= 3:\n        # Short history: default to 0\n        return 0\n    \n    # Extract recent moves for pattern analysis\n    recent_moves = history[-3:]\n    our_moves = [move for move, _ in recent_moves]\n    their_moves = [move for _, move in recent_moves]\n    \n    # Check if opponent mirrored our moves in the last 3 rounds\n    mirror_count = 0\n    for i in range(len(our_moves)):\n        if their_moves[i] == our_moves[i]:\n            mirror_count += 1\n    \n    # Calculate confidence: 100% for full match in last 3 rounds\n    # Apply 20% decay for any round older than 3 (not applicable here as we only use last 3)\n    confidence = mirror_count / 3.0\n    \n    # If opponent mirrors with high confidence (>0.7), deviate to 1 to break coordination\n    if confidence > 0.7:\n        return 1\n    else:\n        return 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.2302000522613525}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

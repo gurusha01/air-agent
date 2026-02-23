@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "Implement a feedback-driven strategy that uses a sliding window of the last 3 rounds to compute a weighted average of opponent actions, then adjusts the row player's move based on a predicted payoff from a logistic regression model trained on historical data. The model assigns higher weights to recent rounds and incorporates a noise term to maintain unpredictability. The strategy selects the action (cooperate or defect) that maximizes the expected payoff under this model, with a 65% probability of choosing the action predicted by the model and 35% randomization to prevent pattern detection.",
+  "score": 1.1798800230026245,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport numpy as np\n\ndef row_strategy(history):\n    if len(history) < 3:\n        # Use default behavior for short history\n        return 0\n    \n    # Extract the last 3 rounds\n    last_three = history[-3:]\n    my_moves = [pair[0] for pair in last_three]\n    their_moves = [pair[1] for pair in last_three]\n    \n    # Weighted average of their moves, with more weight on recent rounds\n    weights = [0.2, 0.3, 0.5]  # increasing weight for most recent\n    their_avg = sum(w * move for w, move in zip(weights, their_moves)) / sum(weights)\n    \n    # Predict opponent's move using logistic regression-like model\n    # Model: P(opponent chooses 1) = 1 / (1 + exp(-w0 - w1 * my_move))\n    # Simple heuristic: if they chose 1 recently, they're more likely to choose 1\n    recent_ones = sum(1 for m in their_moves if m == 1)\n    p_their_1 = min(0.8, recent_ones / len(their_moves) + 0.1)  # base probability\n    \n    # Predict payoff for row player if choosing 0 or 1\n    # Payoff: if both 0 \u2192 2, both 1 \u2192 1, different \u2192 0\n    # So: choosing 0 gives: 2 if their move is 0, 0 if their move is 1\n    # Choosing 1 gives: 1 if their move is 1, 0 if their move is 0\n    \n    # Expected payoff if choosing 0\n    exp_payoff_0 = 2 * (1 - p_their_1) + 0 * p_their_1\n    \n    # Expected payoff if choosing 1\n    exp_payoff_1 = 1 * p_their_1 + 0 * (1 - p_their_1)\n    \n    # Choose action that maximizes expected payoff\n    if exp_payoff_0 > exp_payoff_1:\n        predicted_move = 0\n    else:\n        predicted_move = 1\n    \n    # Add noise: 65% follow prediction, 35% random\n    if random.random() < 0.65:\n        return predicted_move\n    else:\n        return random.choice([0, 1])\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.1798800230026245}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

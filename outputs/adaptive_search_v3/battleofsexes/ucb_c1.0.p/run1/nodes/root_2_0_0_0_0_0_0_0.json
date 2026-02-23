@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0_0_0_0_0_0_0",
+  "parent_id": "root_2_0_0_0_0_0_0",
+  "depth": 8,
+  "strategy": "Introduce a context-aware action selection mechanism using a sliding-window correlation matrix that tracks co-occurrence patterns between row and column player actions over the past 5 rounds. Instead of relying on Q-values, the strategy computes a payoff-weighted adjacency matrix where each entry represents the historical payoff of a row action paired with a specific opponent action. The row player then selects the action that maximizes the expected payoff based on the most frequent and high-payoff co-occurrence patterns, weighted by a dynamic confidence threshold (initially set to 0.7, updated after every 3 rounds). This method uses simple frequency-based feature engineering and avoids any reinforcement learning or temporal discounting.",
+  "score": 1.4422399997711182,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) == 0:\n        return 0\n    \n    round_num = len(history)\n    \n    # Extract all past moves for co-occurrence analysis\n    if len(history) < 5:\n        # Early game: default to 0\n        return 0\n    \n    # Extract the last 5 rounds of (my_move, their_move)\n    past_moves = history[-5:]\n    my_moves = [move[0] for move in past_moves]\n    their_moves = [move[1] for move in past_moves]\n    \n    # Build a co-occurrence payoff matrix: payoff[row_action][their_action]\n    # Payoffs: (0,0) -> 2, (1,1) -> 2, otherwise -> 0\n    payoff_matrix = [[0, 0], [0, 0]]\n    \n    for my, their in zip(my_moves, their_moves):\n        if my == 0 and their == 0:\n            payoff_matrix[0][0] += 2\n        elif my == 1 and their == 1:\n            payoff_matrix[1][1] += 2\n        # Otherwise, 0 payoff\n    \n    # Compute frequency of each (my_action, their_action) pair\n    freq = [[0, 0], [0, 0]]\n    for my, their in zip(my_moves, their_moves):\n        freq[my][their] += 1\n    \n    # Normalize frequencies to get confidence weights\n    total_freq = sum(sum(row) for row in freq)\n    if total_freq == 0:\n        return 0\n    \n    # Dynamic confidence threshold (starts at 0.7, updated every 3 rounds)\n    confidence_threshold = 0.7\n    if round_num % 3 == 0:\n        confidence_threshold = 0.8\n    \n    # Compute expected payoff for each row action\n    expected_payoff = [0, 0]\n    for action in range(2):\n        total_payoff = 0\n        for their_action in range(2):\n            if freq[action][their_action] > 0:\n                total_payoff += payoff_matrix[action][their_action] * (freq[action][their_action] / total_freq)\n        expected_payoff[action] = total_payoff\n    \n    # Select action with higher expected payoff\n    if expected_payoff[0] >= expected_payoff[1]:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.4422399997711182}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 42
+}

@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2_1_0_0",
+  "parent_id": "root_2_1_0",
+  "depth": 4,
+  "strategy": "Apply a temporal difference learning (TD) model with eligibility traces to predict future payoffs based on delayed rewards. Instead of updating Q-values after each round, the model maintains an eligibility trace that accumulates credit for actions taken in previous rounds, allowing it to learn long-term dependencies. The strategy uses a trace decay rate of 0.9 and updates action probabilities every round based on the TD error weighted by the eligibility trace. This enables the row player to anticipate the cumulative payoff of coordination and divergence over a 5-round horizon, improving stability in repeated interactions.",
+  "score": 1.4418400526046753,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Initialize eligibility traces and Q-values\n    eligibility_trace = {0: 0.0, 1: 0.0}\n    q_values = {0: 0.0, 1: 0.0}\n    trace_decay = 0.9\n    learning_rate = 0.1\n    \n    # Extract opponent's last few moves\n    opponent_moves = [move for _, move in history[-5:]]\n    \n    # Current move (last action)\n    last_my_move = history[-1][0]\n    last_their_move = history[-1][1]\n    \n    # Compute immediate reward\n    reward = 2 if last_my_move == last_their_move and last_my_move == 0 else \\\n             1 if last_my_move == last_their_move and last_my_move == 1 else 0\n    \n    # Update eligibility trace (decay and add)\n    for action in [0, 1]:\n        eligibility_trace[action] *= trace_decay\n    \n    # TD error based on reward and predicted value\n    predicted_reward = q_values[0] if last_my_move == 0 else q_values[1]\n    td_error = reward - predicted_reward\n    \n    # Update eligibility trace with TD error\n    eligibility_trace[0] += 1 if last_my_move == 0 else 0\n    eligibility_trace[1] += 1 if last_my_move == 1 else 0\n    \n    # Update Q-values using TD error and eligibility trace\n    for action in [0, 1]:\n        q_values[action] += learning_rate * td_error * eligibility_trace[action]\n    \n    # Choose action with highest Q-value (0 preferred)\n    return 0 if q_values[0] >= q_values[1] else 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.4418400526046753}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 22,
+  "reflection": "The best-performing approaches so far are the Transformer-based and dynamic graph-based models, achieving scores of **1.4378** and **1.4377**, respectively. These outperform baseline and simpler models because they effectively capture complex, non-linear patterns in opponent behavior by leveraging self-attention or temporal graph structures over move histories\u2014particularly using the last ten moves, which provides richer contextual information than just the last five. In contrast, approaches like reinforcement learning with Q-learning (e.g., root_2_1_0: 1.3767) or meta-strategies (e.g., root_2_1: 0.8311) fail to scale well due to poor convergence or overfitting to short-term patterns. Specifically, quantum-inspired or contextual bandit strategies (e.g., root_2_1_2: 1.2294, root_2_0: 0.4615) show weak performance, indicating that abstract or simplistic probabilistic models fail to exploit temporal dependencies. The next experiment should expand **root_2_1_0** by implementing a **Q-learning agent with a state representation that includes the last ten opponent moves encoded via a lightweight Transformer encoder**, using a **discount factor of 0.95** and **epsilon-greedy exploration with decaying epsilon (from 0.1 to 0.01 over 1000 episodes)** to balance exploration and exploitation. This builds on the success of the Transformer while refining the reinforcement learning framework with richer state features and stable training dynamics."
+}

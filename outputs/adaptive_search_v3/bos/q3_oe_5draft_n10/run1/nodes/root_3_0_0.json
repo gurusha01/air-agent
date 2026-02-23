@@ -1,0 +1,22 @@
+{
+  "node_id": "root_3_0_0",
+  "parent_id": "root_3_0",
+  "depth": 3,
+  "strategy": "Apply a meta-adaptive policy using a hybrid of evolutionary game theory and random perturbation: simulate a population of cooperation strategies over time, where each strategy is evaluated based on its average payoff against a dynamically generated opponent profile that mimics the historical behavior but introduces Gaussian noise to prevent exploitation. The best-performing strategy is selected and slightly perturbed (via stochastic mutation) to maintain diversity. This strategy leverages population-level selection dynamics to evolve a robust cooperation probability that adapts to opponent patterns without relying on direct learning from past interactions.",
+  "score": 0.8095300197601318,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport numpy as np\n\n# Parameters for evolutionary dynamics\npopulation_size = 100\nmutation_rate = 0.05\nnum_generations = 10\nselection_pressure = 0.8\n\n# Store population of strategies (each is a function that returns 0 or 1)\npopulation = []\nfor _ in range(population_size):\n    # Initialize with random strategies based on probability of choosing 0\n    p = random.uniform(0.3, 0.7)\n    def strategy(history, p=p):\n        if len(history) == 0:\n            return 0\n        # Use a simple rule: choose 0 with probability p, otherwise 1\n        return 1 if random.random() > p else 0\n    population.append(strategy)\n\ndef row_strategy(history):\n    global population\n    \n    # If history is empty, return 0\n    if len(history) == 0:\n        return 0\n    \n    # Evaluate each strategy in the population against a noisy version of the opponent\n    # Simulate a single round of evaluation for this history\n    fitnesses = []\n    for strategy in population:\n        # Simulate the payoff of this strategy against the opponent's pattern with noise\n        # We simulate the opponent's behavior as a copy of the last move with 80% chance\n        # and add Gaussian noise to prevent exploitation\n        their_moves = []\n        own_moves = []\n        \n        # Use the history to simulate opponent behavior\n        for own, their in history:\n            their_moves.append(their)\n            own_moves.append(own)\n        \n        # Simulate the next move based on opponent's last move (80% copy, 20% random)\n        # Add Gaussian noise to the opponent's move to simulate unpredictability\n        their_next = their_moves[-1] if len(their_moves) > 0 else 0\n        their_next = random.choices([their_next, random.randint(0,1)], weights=[0.8, 0.2])[0]\n        \n        # Simulate one round of interaction with this strategy\n        own_move = strategy(history, p=0.5)  # Use a base probability to simulate the strategy\n        payoff = 0\n        if own_move == 0",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.8095300197601318}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 17,
+  "reflection": null
+}

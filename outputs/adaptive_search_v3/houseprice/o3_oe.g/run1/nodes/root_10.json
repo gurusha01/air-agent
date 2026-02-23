@@ -1,0 +1,10 @@
+{
+  "node_id": "root_10",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Variation: Keep the current LightGBM-based pipeline but tighten the preprocessing and regularization.\n\n1. Pre-processing tweaks  \n   \u2022 Numerical skew fix: For every numeric feature with |skew| > 0.75, apply a Yeo-Johnson power transform instead of simple log1p.  \n   \u2022 Categorical consolidation: Lump categories with < 1 % frequency into \u2018Rare\u2019 to reduce noise, then let LightGBM consume them natively (no one-hot) so it can learn optimal splits.  \n   \u2022 Interaction bump: Add 10 hand-crafted interactions that historically correlate well (e.g., OverallQual\u00d7GrLivArea, TotalBsmtSF\u00d7OverallCond).\n\n2. LightGBM hyper-parameter shift  \n   \u2022 num_leaves: 256 \u2192 192 (slightly smaller to curb over-fitting after interaction terms)  \n   \u2022 min_data_in_leaf: 20 \u2192 40  \n   \u2022 learning_rate: 0.03 \u2192 0.02 (and raise num_iterations cap from 2000 to 4000 with early-stopping=200)  \n   \u2022 feature_fraction: 0.8 \u2192 0.75  \n   \u2022 lambda_l2: 0.0 \u2192 0.15  \n   \u2022 Keep bagging_fraction=0.8, bagging_freq=1.  \n\n3. CV protocol  \n   \u2022 5-fold KFold (same seed) but run two independent CV passes and average the out-of-fold predictions before retraining on full data; this flattens fold-to-fold variance.\n\nRationale: The power transform should normalize heavy tails better than log1p, the rarer-category folding plus higher min_data_in_leaf/L2 should damp over-fit, and smaller learning-rate with more rounds lets the model harvest the new interaction features smoothly.\n\nExpected lift: modest but measurable, mostly from the skew correction and stronger regularization.",
+  "score": null,
+  "error": "LLM failed: LLM failed after 3 attempts: Error code: 400 - {'error': {'message': \"This model's maximum context length is 200000 tokens. However, your messages resulted in 795798 tokens. Please reduce the length of the messages.\", 'type': 'invalid_request_error', 'param': 'messages', 'code': 'context_length_exceeded'}}",
+  "actions": [],
+  "conversation_length": 17
+}

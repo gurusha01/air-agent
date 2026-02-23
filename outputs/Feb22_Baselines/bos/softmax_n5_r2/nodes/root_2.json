@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Apply a noise-injected deterministic strategy where the row player selects the option that maximizes payoff under a Gaussian noise perturbation of the expected value, with the noise level tuned to break symmetry and induce unpredictable behavior. The strategy evaluates both options using a modified payoff matrix with added random fluctuations, and selects the option with the higher expected value after noise injection.",
+  "score": 1.105239987373352,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\ndef row_strategy(history):\n    if not history:\n        return 0\n    # Calculate expected payoff for each action based on historical moves\n    # Add Gaussian noise to break symmetry and induce unpredictability\n    noise_level = 0.1\n    total_your_moves = sum(move[0] for move in history)\n    total_their_moves = sum(move[1] for move in history)\n    \n    # Expected payoff for choosing 0: (2,1) when both 0, (0,0) otherwise\n    # Expected payoff for choosing 1: (1,2) when both 1, (0,0) otherwise\n    # We use a modified expected value with noise\n    expected_0 = 2 * (1 - total_their_moves / len(history)) * (1 - total_your_moves / len(history)) + 0.01\n    expected_1 = 2 * (total_their_moves / len(history)) * (total_your_moves / len(history)) + 0.01\n    \n    # Inject Gaussian noise to break symmetry\n    noise_0 = random.gauss(0, noise_level)\n    noise_1 = random.gauss(0, noise_level)\n    \n    noisy_expected_0 = expected_0 + noise_0\n    noisy_expected_1 = expected_1 + noise_1\n    \n    # Choose action with higher noisy expected value\n    if noisy_expected_0 > noisy_expected_1:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.105239987373352}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 7,
+  "reflection": "The time-dependent adaptive strategy in **root_1** (score: 1.2040) has outperformed all others, demonstrating that leveraging lagged history\u2014specifically a simple moving average of the past 3 moves\u2014enables the row player to anticipate and respond to the column player\u2019s behavior more effectively. This approach works because it captures short-term patterns in the opponent\u2019s choices, allowing for dynamic adjustment without requiring complex modeling. In contrast, the mixed strategy in **root_0** (score: 0.6838) fails to exploit temporal dependencies and instead relies on static probabilities, resulting in poor performance due to lack of responsiveness. Strategies that assume symmetry or fixed preferences (e.g., always matching or deviating with fixed probabilities) consistently underperform, as they ignore the dynamic nature of the game. The next experiment should specifically test a **sliding window moving average with a 5-move history** and a decay factor of 0.3 applied to the lagged choices, using a threshold of 0.7 to trigger a switch in strategy. This builds on root_1\u2019s success by increasing the window size to capture longer-term trends while maintaining responsiveness, and the decay factor helps reduce noise from outdated data. This concrete variation directly extends the proven adaptive mechanism with tunable hyperparameters to improve robustness and generalization."
+}

@@ -1,0 +1,22 @@
+{
+  "node_id": "root_1_2",
+  "parent_id": "root_1",
+  "depth": 2,
+  "strategy": "Use a context-aware decision tree with adaptive splits based on historical opponent action sequences. The tree partitions the state space using features like the opponent's last two moves and the row player\u2019s own prior action, then assigns a payoff-weighted action probability based on the most recent leaf. This strategy introduces non-linear pattern recognition and dynamic rule adaptation without relying on explicit value function estimation.",
+  "score": 0.8395500183105469,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 2:\n        # Not enough history to build context\n        return random.choice([0, 1])\n    \n    # Extract last two moves (to form context)\n    last_two_own = [h[0] for h in history[-2:]]\n    last_two_their = [h[1] for h in history[-2:]]\n    \n    # Create a context tuple: (last_own, last_their, second_last_own, second_last_their)\n    context = (last_two_own[0], last_two_their[0], last_two_own[1], last_two_their[1])\n    \n    # Define decision rules based on context (non-linear, rule-based)\n    if context == (0, 0, 0, 0):\n        return 0\n    elif context == (1, 1, 1, 1):\n        return 1\n    elif context == (0, 1, 0, 0):\n        return 0\n    elif context == (1, 0, 1, 1):\n        return 1\n    elif context == (0, 0, 1, 1):\n        return 1\n    elif context == (1, 1, 0, 0):\n        return 0\n    elif context == (0, 1, 1, 0):\n        return 1\n    elif context == (1, 0, 0, 1):\n        return 0\n    else:\n        # Default fallback: random choice with bias toward 0 (since we prefer 0)\n        return random.choice([0, 1])\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.8395500183105469}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12,
+  "reflection": "The best-performing strategies so far\u2014particularly **root_0_0_0_0_0** (1.3319) and **root_1_0** (1.1607)\u2014demonstrate that **reinforcement learning with rich, contextual state representations** (like 2D heatmaps of past actions) outperforms simpler or more heuristic methods. The CNN-based approach with a 2D heatmap of the last 10 rounds' actions captures temporal patterns and spatial correlations in opponent behavior, enabling the model to learn complex, adaptive strategies. In contrast, strategies relying on simple Bayesian updating (e.g., root_1_1: 1.0784) or basic mirroring (root_2: 1.0457) fail to exploit long-term strategic dependencies. Notably, **temporal difference learning with decaying rewards** (root_1_0) performs well, suggesting that emphasizing short-term payoff differences helps in dynamic environments. However, **simple reinforcement learning without state context** (e.g., root_1: 0.9313) or **dynamic thresholding** (root_2_0: 0.8006) consistently underperforms, likely due to insufficient modeling of opponent behavior or lack of reward shaping. The next experiment should expand **root_1** (0.9313) by introducing a **state representation that includes both the opponent\u2019s action history and a temporal decayed reward signal**, similar to root_1_0, but with a **CNN-based policy head** to better capture spatial patterns in the action sequence. Specifically, we should implement a **CNN with a 2D heatmap of the last 10 rounds**, combined with a **decaying reward funct..."
+}

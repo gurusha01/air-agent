@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0_0",
+  "parent_id": "root_2_0",
+  "depth": 3,
+  "strategy": "Changepoint-Aware Bayesian Learner (CABL)  \n1. Model the opponent as piece-wise stationary: within an unknown \u201crun\u201d the probability of Opera is constant \u03b8, but \u03b8 can jump at any round.  \n2. Employ Bayesian Online Changepoint Detection (Adams & MacKay, 2007): keep a posterior over the current run length r and, for every r, Beta(\u03b1\u1d63,\u03b2\u1d63) sufficient statistics for \u03b8.  \n3. Update step:  \n   \u2022 For every existing run length r, extend it (r\u2190r+1) using the likelihood of the new move; also start a new run (r=0) with the Beta prior (\u03b1\u2080=\u03b2\u2080=1).  \n   \u2022 Multiply all run probabilities by (1\u2212h) (stay) and assign probability h to the new-run branch, where h\u22481/50 is a hazard tuned to typical strategy-switch frequencies.  \n   \u2022 Renormalise and prune tiny probabilities to keep O(\u221aT) active runs.  \n4. Prediction: P\u0302(Opera)=\u03a3\u1d63 P(r)\u00b7\u03b1\u1d63/(\u03b1\u1d63+\u03b2\u1d63).  \n5. Best response: play Opera if 2\u00b7P\u0302 \u2265 1\u2212P\u0302, else Football.  \nWhy it\u2019s different: unlike the decaying-count Markov method, CABL is an i.i.d. model but with explicit, probabilistic changepoint resets; it reacts instantly to abrupt shifts yet never \u201cforgets\u201d data within a stable block, giving lower variance estimates and better long-horizon reward.  \nComplexity: amortised O(1) time, sub-linear memory via pruning.",
+  "score": 1.2511199712753296,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    \"\"\"\n    Changepoint-Aware Bayesian Learner (CABL) for the Iterated Battle of the Sexes.\n\n    Opponent is modelled as piece-wise i.i.d. Bernoulli with unknown changepoints.\n    We run Bayesian Online Changepoint Detection with a constant hazard h, using\n    Beta(1,1) conjugate pairs for each run segment. For the current posterior we\n    compute the predictive probability that the opponent\u2019s *next* move is 0\n    (our preferred joint action). We then choose the action that maximises our\n    expected payoff: play 0 if 2\u00b7P\u0302 >= 1-P\u0302, else play 1 (threshold 1/3).\n\n    The game length is only 10, so we recompute from scratch each call; this\n    keeps the code simple and ensures independence between games.\n    \"\"\"\n    # First move: default to our preferred action 0\n    if not history:\n        return 0\n\n    # Hyper-parameters\n    h = 0.2  # changepoint hazard\n\n    # Lists indexed by run length r (r = 0 is the most recent segment)\n    run_probs   = [1.0]        # P(r_t = r) unnormalised\n    alphas      = [1.0]        # Beta(\u03b1,\u03b2) parameters for \u03b8 in each run\n    betas       = [1.0]\n\n    # Process opponent moves sequentially\n    for _, opp_move in history:\n        # Predictive likelihood under each run\n        preds = [a / (a + b) for a, b in zip(alphas, betas)]\n        likes = [p if opp_move == 0 else 1 - p for p in preds]\n\n        # Growth (no changepoint)\n        growth_probs = [(1 - h) * rp * lk for rp, lk in zip(run_probs, likes)]\n\n        # Changepoint: start new run of length 0 with Beta(1,1) prior\n        base_like = 0.5  # predictive from Beta(1,1)\n        new_run_prob = h * sum(run_probs) * base_like\n\n        # Assemble new run-length distribution\n        new_run_probs = [new_run_prob] + growth_probs\n\n        # Normalise\n        total = sum(new_run_probs)\n        run_probs = [rp / total for rp in new_run_probs]\n\n        # Update Beta parameters for each run\n        new_alphas = []\n        ne",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.2511199712753296}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 17
+}

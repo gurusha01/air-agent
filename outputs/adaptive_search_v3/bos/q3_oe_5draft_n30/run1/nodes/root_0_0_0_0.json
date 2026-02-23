@@ -1,0 +1,22 @@
+{
+  "node_id": "root_0_0_0_0",
+  "parent_id": "root_0_0_0",
+  "depth": 4,
+  "strategy": "Use a shallow decision tree with handcrafted features derived from the opponent's action history, including the number of consecutive defections, the time since last cooperation, and a \"pattern drift\" indicator (whether the opponent's actions have changed direction in the last 5 rounds). The tree makes decisions based on these features without any learned parameters, relying on rule-based heuristics derived from historical data. For example, if the opponent has defected in two consecutive rounds and has not cooperated in the last 3 rounds, the strategy defaults to defection; otherwise, it cooperates. This approach avoids neural networks and instead uses interpretable, rule-driven logic to exploit opponent inconsistency.",
+  "score": 0.8915099501609802,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 5:\n        # Not enough history for full pattern analysis\n        return random.randint(0, 1)\n    \n    # Extract opponent's last 5 moves\n    opponent_moves = [move for _, move in history[-5:]]\n    \n    # Compute features\n    consecutive_defections = 0\n    for i in range(1, len(opponent_moves)):\n        if opponent_moves[i] == 1 and opponent_moves[i-1] == 1:\n            consecutive_defections += 1\n        else:\n            consecutive_defections = 0\n    \n    # Time since last cooperation (in rounds)\n    last_cooperation = -1\n    for i in range(len(opponent_moves) - 1, -1, -1):\n        if opponent_moves[i] == 0:\n            last_cooperation = i\n            break\n    time_since_coop = len(opponent_moves) - 1 - last_cooperation if last_cooperation != -1 else 5\n    \n    # Pattern drift: whether opponent changed direction in last 3 rounds\n    drift = 0\n    if len(opponent_moves) >= 3:\n        if opponent_moves[-1] != opponent_moves[-2]:\n            drift = 1\n    \n    # Rule-based decision\n    # If opponent has defected in 2+ consecutive rounds OR has gone 4+ rounds without cooperation, defect\n    if consecutive_defections >= 2 or time_since_coop >= 4:\n        return 1\n    elif drift == 1:\n        # If pattern changed, exploit by cooperating (opponent may be shifting)\n        return 0\n    else:\n        # Default to cooperation if no strong signals\n        return 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.8915099501609802}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 26,
+  "reflection": null
+}

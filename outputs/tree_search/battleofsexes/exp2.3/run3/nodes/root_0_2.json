@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_2",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Apply a time-decay smoothing to the belief distribution, where the prior belief is weighted as 60% of the previous belief and 40% of the observed recent actions (e.g., last 3 rounds). This creates a more stable, smoothed prior that avoids overreacting to short-term noise while still incorporating recent behavior. The result is a more robust initial estimate that performs better under noisy or erratic interactions.  \n<probability>0.68</probability>",
+  "score": 1.441420078277588,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Use time-decay smoothing: 60% prior belief, 40% based on last 3 moves\n    # We assume opponent prefers 1, so we start with a slight bias toward 1\n    # but counter by choosing 0 to exploit their copying behavior\n    \n    # Extract last 3 moves of the opponent (if available)\n    recent_moves = [h[1] for h in history[-3:]] if len(history) >= 3 else [h[1] for h in history]\n    \n    # Compute weighted average of recent opponent moves (0 or 1)\n    # Weighted: 60% prior (assume 0.6 prior bias toward 1, so 0.4 toward 0), 40% observed\n    # We set initial prior to 0.68 (68% chance opponent chooses 1)\n    prior_prob_1 = 0.68\n    observed_prob_1 = sum(1 for move in recent_moves if move == 1) / len(recent_moves) if recent_moves else 0\n    \n    # Smoothed belief: 60% prior, 40% observed\n    smoothed_prob_1 = 0.6 * prior_prob_1 + 0.4 * observed_prob_1\n    \n    # If opponent is likely to choose 1 (above 0.5), we choose 0 to get payoff 2\n    # Otherwise, we go 0 to maintain pattern\n    if smoothed_prob_1 > 0.5:\n        return 0\n    else:\n        return 0\n\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.441420078277588}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2_0_0",
+  "parent_id": "root_2_0",
+  "depth": 3,
+  "strategy": "Implement a state-dependent mixed strategy based on the lag-1 autocorrelation of the column player's past actions. If the column player's last action was identical to their second-to-last action (indicating persistence), the row player increases cooperation probability to 0.80. Otherwise, they reduce cooperation to 0.55. This strategy uses temporal pattern detection to infer stability in the column player's behavior and adjusts accordingly.",
+  "score": 0.6510300040245056,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\ndef row_strategy(history):\n    if len(history) < 2:\n        return 0\n    # Extract the last two opponent moves\n    their_last, their_second_last = history[-1][1], history[-2][1]\n    # Check if opponent's action is persistent (same as second-to-last)\n    if their_last == their_second_last:\n        return 1 if random.random() < 0.80 else 0\n    else:\n        return 1 if random.random() < 0.55 else 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.6510300040245056}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 17,
+  "reflection": "The best-performing approach so far is the GRU-based RNN in **root_1_0_0_0** (score: 1.4340), which leverages a sequence of the opponent\u2019s last five actions to model behavioral dynamics. This outperforms alternatives like Transformers (e.g., root_1_0_0_0_1: 1.3648) and TCNs (e.g., root_1_0_0_0_1_0: 1.2556), suggesting that simpler recurrent models with direct temporal dependencies are more effective than complex architectures with attention or convolutional mechanisms in this setting. In contrast, models introducing uncertainty (e.g., Bayesian NN in root_1_0_0_0_1_0_0_0_0: 0.7960) or overly complex components like decision trees or hierarchical priors have failed, likely due to overfitting or poor generalization on short sequences. The failure of **root_1_0_0_0_0** (FAIL) \u2014 attempting a Transformer with token embeddings on the same sequence \u2014 indicates that self-attention mechanisms do not scale well here without sufficient context or proper sequence modeling. The next experiment should expand **root_2_0** (score: 1.2181), which uses a conditional mixed strategy based on matching the opponent\u2019s previous action. To improve it, we should refine the condition by incorporating the opponent\u2019s *last two actions* (not just one) and use a sliding window of size 3 for action history, similar to the successful TD-learning setup in root_1_0_0_0_1_0_0_0_0_0 (1.1655), while maintaining a simple, interpretable rule-based logic to avoid overcomplication. This specific refinement\u2014adding a tw..."
+}

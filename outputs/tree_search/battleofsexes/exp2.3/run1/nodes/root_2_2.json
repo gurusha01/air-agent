@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_2",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "Apply a weighted average over the memory window, where more recent rounds (e.g., the last 2 rounds) are given higher weight (e.g., 60%) and older rounds (e.g., rounds 3\u20135) are given lower weight (e.g., 10% each). This emphasizes recent behavior while still incorporating historical context, allowing faster adaptation to shifts in opponent strategy.",
+  "score": 0.7495599389076233,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 3:\n        # In the beginning, use a balanced mix to avoid predictability\n        return random.choice([0, 1])\n    \n    # Extract the last 3 rounds\n    recent_moves = history[-3:]\n    my_moves = [move for _, move in recent_moves]\n    their_moves = [move for move, _ in recent_moves]\n    \n    # Base strategy: random 50/50 (to avoid predictability)\n    base_prob = 0.5\n    \n    # Weighted average: more weight on recent rounds (last 2 rounds: 60% each), older (1st round: 10%)\n    weight_recent = 0.6\n    weight_older = 0.1\n    \n    # Count how often they matched my move in the last 3 rounds\n    match_count = sum(1 for i in range(3) if my_moves[i] == their_moves[i])\n    \n    # Adjust probability based on match frequency\n    # If they matched often, they're copying \u2014 so avoid repeating\n    adjustment = 0.1 * (1 - match_count / 3)  # 10% adjustment per mismatch\n    \n    # Adjust probability: increase chance of 0 if they match often (they copy)\n    prob_0 = base_prob + adjustment\n    prob_1 = 1 - prob_0\n    \n    # Cap probabilities between 0 and 1\n    prob_0 = max(0.0, min(1.0, prob_0))\n    prob_1 = max(0.0, min(1.0, prob_1))\n    \n    # Apply weighted average to match frequency \u2014 more recent rounds influence more\n    # Weight recent rounds (last 2) more heavily than the first\n    recent_match_count = sum(1 for i in range(2) if my_moves[i] == their_moves[i])\n    older_match_count = sum(1 for i in range(2, 3) if my_moves[i] == their_moves[i])\n    \n    # Weighted match count: last 2 rounds (60%) and first round (40%)\n    weighted_match_count = (weight_recent * recent_match_count) + (weight_older * older_match_count)\n    \n    # Adjust based on weighted match frequency\n    adjustment = 0.1 * (1 - weighted_match_count / 2)\n    \n    prob_0 = base_prob + adjustment\n    prob_1 = 1 - prob_0\n    \n    # Cap probabilities between 0 and 1\n    prob_0 = max(0.0, min(1.0, prob_0))\n    prob_1 = max",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.7495599389076233}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

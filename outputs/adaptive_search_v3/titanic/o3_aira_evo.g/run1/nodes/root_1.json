@@ -1,0 +1,26 @@
+{
+  "node_id": "root_1",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "draft: You are an ML research agent working on a task.",
+  "score": 0.8660287081339713,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.preprocessing import OneHotEncoder\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom xgboost import XGBClassifier\n\ndef extract_title(name):\n    title = name.split(',')[1].split('.')[0].strip()\n    # Standardize some titles\n    mapping = {'Mlle': 'Miss', 'Ms': 'Miss', 'Mme': 'Mrs', 'Lady': 'Royal',\n               'Countess': 'Royal', 'Dona': 'Royal', 'Sir': 'Royal',\n               'Jonkheer': 'Royal', 'Don': 'Royal', 'Dr': 'Officer',\n               'Rev': 'Officer', 'Col': 'Officer', 'Major': 'Officer', 'Capt': 'Officer'}\n    return mapping.get(title, title)\n\ndef preprocess(df):\n    # Title\n    df['Title'] = df['Name'].apply(extract_title)\n    # Rare titles\n    title_counts = df['Title'].value_counts()\n    rare_titles = title_counts[title_counts < 10].index\n    df['Title'] = df['Title'].replace(rare_titles, 'Rare')\n    # Family features\n    df['FamilySize'] = df['SibSp'] + df['Parch'] + 1\n    df['IsAlone'] = (df['FamilySize'] == 1).astype(int)\n    # Cabin letter\n    df['CabinLetter'] = df['Cabin'].fillna('U').apply(lambda x: x[0])\n    # Ticket prefix\n    def ticket_prefix(t):\n        t = t.replace('.', '').replace('/', '').strip()\n        parts = t.split()\n        return parts[0] if not parts[0].isdigit() else 'NONE'\n    df['TicketPrefix'] = df['Ticket'].apply(ticket_prefix)\n    # Fill Embarked\n    df['Embarked'] = df['Embarked'].fillna(df['Embarked'].mode()[0])\n    # Fill Fare\n    df['Fare'] = df['Fare'].fillna(df.groupby(['Pclass','Embarked'])['Fare'].transform('median'))\n    # Fill Age using median by Title & Pclass\n    age_med = df.groupby(['Title','Pclass'])['Age'].median()\n    def fill_age(row):\n        if np.isnan(row['Age']):\n            return age_med.loc[row['Title'], row['Pclass']]\n        return row['Age']\n    df['Age'] = df.apply(fill_age, axis=1)\n    # If still NaN (edge",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.8660287081339713}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9
+}

@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0_1",
+  "parent_id": "root_2_0",
+  "depth": 3,
+  "strategy": "improve: You are an ML research agent working on a task.",
+  "score": 1.2243801355361938,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\ndef row_strategy(history):\n    if len(history) == 0:\n        return 0\n    \n    if len(history) == 1:\n        return 0\n    \n    your_moves = [move for _, move in history]\n    their_moves = [move for move, _ in history]\n    \n    # Track the last three moves to detect cycles and repetition patterns\n    # Use a sliding window of 3 to detect if the opponent is in a repeating pattern\n    if len(your_moves) < 3:\n        # Early game: default to 0\n        return 0\n    \n    # Extract last three moves\n    last_three_your = your_moves[-3:]\n    last_three_their = their_moves[-3:]\n    \n    # Detect if opponent is in a repeating cycle (e.g., 0,0,1,1,0,0,1,1)\n    # If they repeat every 2 moves, we break the cycle with 10% chance\n    def has_cycle(pattern, period=2):\n        if len(pattern) < period:\n            return False\n        for i in range(len(pattern) - period):\n            if pattern[i:i+period] == pattern[i+1:i+period+1]:\n                return True\n        return False\n    \n    # If opponent has a 2-period cycle (e.g., 0,0,1,1,0,0), we deviate\n    if has_cycle(last_three_their, 2):\n        if random.random() < 0.1:\n            return 1 - your_moves[-1]\n        else:\n            return your_moves[-1]\n    \n    # If opponent has a 3-period cycle (e.g., 0,1,0,0,1,0), we also deviate\n    if has_cycle(last_three_their, 3):\n        if random.random() < 0.08:\n            return 1 - your_moves[-1]\n        else:\n            return your_moves[-1]\n    \n    # Base deviation logic: if they copied our last move, deviate 20% chance\n    last_your_move = your_moves[-1]\n    last_their_move = their_moves[-1]\n    \n    if last_your_move == last_their_move:\n        if random.random() < 0.2:\n            return 1 - last_your_move\n        else:\n            return last_your_move\n    else:\n        return 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.2243801355361938}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 17
+}

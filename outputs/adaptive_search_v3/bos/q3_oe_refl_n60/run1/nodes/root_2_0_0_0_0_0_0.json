@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2_0_0_0_0_0_0",
+  "parent_id": "root_2_0_0_0_0_0",
+  "depth": 7,
+  "strategy": "Implement a time-delayed feedback strategy where the row player's cooperation probability is determined by the XOR of the column player's actions from 3 rounds ago and the current round's observed payoff history. Specifically, if the column player defected in round t-3 and the average payoff over the last 3 rounds exceeds 0.8, the row player cooperates with a 70% probability. Otherwise, cooperation is reduced to 30%. This introduces a memory-based nonlinearity that leverages temporal asymmetry without relying on chaotic dynamics or logistic mappings.",
+  "score": 1.0985699892044067,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 4:\n        return 0\n    \n    # Extract opponent's action 3 rounds ago\n    their_t_minus_3 = history[-4][1] if len(history) >= 4 else 0\n    \n    # Compute average payoff over the last 3 rounds\n    total_payoff = 0\n    for my_move, their_move in history[-3:]:\n        if my_move == their_move:\n            total_payoff += 2\n        else:\n            total_payoff += 0\n    avg_payoff = total_payoff / 3.0 if history[-3:] else 0\n    \n    # Apply XOR-like condition: defect at t-3 and high payoff\n    if their_t_minus_3 == 1 and avg_payoff > 0.8:\n        return 1 if random.random() < 0.7 else 0\n    else:\n        return 1 if random.random() < 0.3 else 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.0985699892044067}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 37,
+  "reflection": "The best-performing approach so far is the GRU-based RNN in **root_1_0_0_0** (score: 1.4340), which leverages a sequence of the opponent\u2019s last five actions as input to model behavioral dynamics. This outperforms alternatives like Transformers (1.3648, 1.2556) and TCNs (1.2556), suggesting that simpler recurrent models with direct temporal dependencies are more effective than complex architectures with attention or convolutional mechanisms in this setting. In contrast, approaches involving Bayesian Neural Networks (0.7960), decision trees (0.5974), or quantum-inspired strategies (1.0785) have underperformed, indicating that uncertainty modeling or abstract probability modulation adds noise without payoff. The chaotic map-based strategy (**root_2_0_0_0_0_0**, score: 1.0800) shows promise as a baseline with moderate performance, but it lacks the temporal modeling depth of the GRU. The next experiment should expand **root_2_0_0_0_0_0** by replacing the logistic map with a **dynamically tuned GRU** that uses the opponent\u2019s last five actions as input, with a **sliding window of 5 rounds** and **learned parameters for the logistic map\u2019s growth rate**, to combine the robustness of chaos-based dynamics with the temporal modeling strength of RNNs. This hybrid approach directly builds on the success of the GRU baseline while introducing adaptive parameterization to better respond to opponent behavior."
+}

@@ -1,0 +1,22 @@
+{
+  "node_id": "root_2_1_2",
+  "parent_id": "root_2_1",
+  "depth": 3,
+  "strategy": "Implement a quantum-inspired probabilistic strategy where the row player's action is determined by a weighted superposition of coordination and divergence, with the weight dynamically adjusted based on the opponent's move variance over the past 4 rounds. If the opponent's choices show high variance (standard deviation > 0.3), the strategy favors divergence with a probability of 0.7; otherwise, it favors coordination with a probability of 0.7. The transition between states is modeled using a quantum amplitude decay function that depends on the number of consecutive similar moves. This introduces non-classical randomness while remaining responsive to opponent patterns.",
+  "score": 1.2293899059295654,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport math\n\ndef row_strategy(history):\n    if len(history) < 4:\n        return 0\n    \n    # Extract opponent's last 4 moves\n    opponent_moves = [move for _, move in history[-4:]]\n    \n    # Compute variance of opponent's moves\n    mean = sum(opponent_moves) / len(opponent_moves)\n    variance = sum((m - mean) ** 2 for m in opponent_moves) / len(opponent_moves)\n    variance = max(0, variance)  # Ensure non-negative\n    \n    # High variance: favor divergence\n    if variance > 0.3:\n        divergence_prob = 0.7\n    else:\n        divergence_prob = 0.3\n    \n    # Quantum amplitude decay: based on consecutive similar moves\n    consecutive_same = 0\n    for i in range(1, len(opponent_moves)):\n        if opponent_moves[i] == opponent_moves[i-1]:\n            consecutive_same += 1\n        else:\n            break\n    \n    # Amplitude decay: more similar moves \u2192 lower divergence probability\n    decay_factor = 1.0 / (1.0 + consecutive_same * 0.2)\n    divergence_prob *= decay_factor\n    \n    # Final action: sample from adjusted distribution\n    if random.random() < divergence_prob:\n        return 1\n    else:\n        return 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.2293899059295654}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 17,
+  "reflection": "The best-performing approach so far is the GRU-based RNN in **root_2_0_0**, achieving a score of **1.4325**\u2014a significant improvement over the baseline (1.0227)\u2014because it effectively models temporal dependencies in opponent behavior by using only the last five moves and employing time-aware embeddings instead of one-hot encoding. This allows the model to capture sequential patterns and context more efficiently than static or shallow representations. In contrast, strategies like **root_2_1** (0.8311) and its sibling **root_2_1_1** (0.8271), which rely on TD learning or meta-mode switching, consistently underperform, likely due to poor action-value estimation and lack of sufficient context or adaptation speed. The **root_2_1_0** variant (1.3767) shows promise with Q-learning but still lags behind the GRU, suggesting that reinforcement learning without strong temporal modeling or sufficient state representation fails to capture opponent dynamics. The next experiment should expand **root_2_1** by implementing a **hybrid temporal model** that combines a **lightweight GRU (with only 3 hidden units)** to process the last five opponent moves, using **time-aware embeddings** for move sequences, and feeding the output into a **small feedforward layer** to compute a weighted action probability\u2014specifically, adjusting the coordination probability based on the GRU\u2019s hidden state and a learned attention mechanism over the last five moves. This maintains the temporal modeling strength of t..."
+}

@@ -1,0 +1,26 @@
+{
+  "node_id": "root_0_0",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "draft: You are an ML research agent working on a task.",
+  "score": 0.8588516746411483,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom catboost import CatBoostClassifier\n\ndef preprocess(df):\n    # Title from Name\n    df['Title'] = df['Name'].str.extract(',\\s*([^\\.]*)\\s*\\.', expand=False)\n    rare_titles = ['Dr', 'Rev', 'Col', 'Major', 'Mlle', 'Countess', 'Ms', 'Lady',\n                   'Jonkheer', 'Don', 'Dona', 'Capt', 'Sir']\n    df['Title'] = df['Title'].replace(rare_titles, 'Rare')\n    \n    # Cabin initial\n    df['Cabin'] = df['Cabin'].fillna('Unknown')\n    df['CabinInitial'] = df['Cabin'].str[0]\n    \n    # Ticket prefix\n    df['TicketPrefix'] = df['Ticket'].apply(lambda x: x.split()[0] if not x.split()[0].isdigit() else 'NUM')\n    \n    # Family size & alone flag\n    df['FamilySize'] = df['SibSp'] + df['Parch'] + 1\n    df['IsAlone'] = (df['FamilySize'] == 1).astype(int)\n    \n    # Fill missing numerical values with median\n    for col in ['Age', 'Fare']:\n        df[col] = df[col].fillna(df[col].median())\n    \n    # Fill Embarked with mode\n    df['Embarked'] = df['Embarked'].fillna(df['Embarked'].mode()[0])\n    \n    return df\n\n# Load data\ntrain_df = pd.read_csv('data/train.csv')\ntest_df  = pd.read_csv('data/test.csv')\n\n# Preserve PassengerId for submission\ntest_passenger_ids = test_df['PassengerId']\n\n# Preprocess\nfull_df = pd.concat([train_df, test_df], sort=False)\nfull_df = preprocess(full_df)\n\n# Columns to drop\ndrop_cols = ['PassengerId', 'Survived', 'Name', 'Ticket', 'Cabin']\nfull_df = full_df.drop(columns=drop_cols)\n\n# Identify categorical features\ncat_features = full_df.select_dtypes(include=['object']).columns.tolist()\n\n# Split back\nX_train = full_df.iloc[:len(train_df), :]\nX_test  = full_df.iloc[len(train_df):, :]\ny_train = train_df['Survived']\n\n# Initialize and train CatBoost\nmodel = CatBoostClassifier(\n    iterations=500,\n    learning_rate=0.05,\n    depth=6,\n    l2_leaf_reg=3,\n    random_state=42,\n    loss_function='Logloss',\n    eval_metric='Accuracy',\n    verbose=False\n)\n\nmodel.fit(X_train, y_train, c",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.8588516746411483}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9
+}

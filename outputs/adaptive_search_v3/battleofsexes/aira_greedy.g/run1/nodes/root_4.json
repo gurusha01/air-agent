@@ -1,0 +1,21 @@
+{
+  "node_id": "root_4",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "draft: You are an ML research agent working on a task.",
+  "score": 0.9449099898338318,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\ndef row_strategy(history):\n    if not history:\n        return 0\n    # Track move patterns: opponent's last move and our own history\n    if len(history) < 2:\n        # Early rounds: random but biased toward 0 (our preference)\n        return 0 if random.random() > 0.3 else 1\n    \n    # Extract recent moves\n    last_our_move = history[-1][0]\n    last_their_move = history[-1][1]\n    \n    # If opponent copied our last move (80% chance), they're likely to repeat\n    # But if they deviated, we adjust: if they chose 1 when we chose 0, we go 1 to provoke\n    # Use a simple memory-based counter: if we've been 0, and they keep 1, we switch to 1\n    # If we've been 1, and they keep 0, we switch to 0\n    \n    # Count recent deviations\n    recent_deviation_count = 0\n    for i in range(max(0, len(history) - 5), len(history)):\n        our_move, their_move = history[i]\n        if our_move != their_move:\n            recent_deviation_count += 1\n    \n    # If frequent deviations, suspect opponent is trying to balance \u2014 respond with 1 to trigger coordination\n    if recent_deviation_count > 2:\n        return 1\n    elif last_their_move == 1 and last_our_move == 0:\n        # They picked 1 after we picked 0 \u2014 they might be copying us, so we stay 0 to maintain consistency\n        return 0\n    elif last_their_move == 0 and last_our_move == 1:\n        # They picked 0 after we picked 1 \u2014 they may be reacting to our move; switch to 0 to provoke\n        return 0\n    else:\n        # Default: follow last move with slight randomness to avoid predictability\n        return last_our_move if random.random() > 0.2 else 1 - last_our_move\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.9449099898338318}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 7
+}

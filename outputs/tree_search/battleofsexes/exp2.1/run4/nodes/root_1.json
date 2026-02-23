@@ -1,0 +1,21 @@
+{
+  "node_id": "root_1",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Implement a dynamic payoff-weighted strategy: observe historical interactions (simulated) and adjust the probability of choosing the preferred option (e.g., football or opera) based on the column player's past choices. Use a simple exponential moving average to update the probability of selecting each action, biasing toward the option that yields higher average payoffs in recent rounds.",
+  "score": 1.1344300508499146,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Count recent rounds where opponent chose 0 and 1\n    opponent_0_count = sum(1 for _, opp_move in history if opp_move == 0)\n    opponent_1_count = sum(1 for _, opp_move in history if opp_move == 1)\n    \n    # Simple exponential moving average with decay factor 0.9\n    # Weight recent moves more heavily\n    alpha = 0.9\n    recent_opponent_0 = opponent_0_count * alpha + (1 - alpha) * opponent_0_count\n    recent_opponent_1 = opponent_1_count * alpha + (1 - alpha) * opponent_1_count\n    \n    # Total count of recent rounds\n    total_rounds = len(history)\n    \n    # If opponent chose 0 more, prefer 1 (to match and get payoff 2)\n    # If opponent chose 1 more, prefer 0 (to match and get payoff 2)\n    # But since we prefer 0, we balance with payoff expectations\n    # Payoff: both 0 \u2192 2, both 1 \u2192 1, different \u2192 0\n    # So we prefer to match opponent when they choose 0 (payoff 2)\n    # But if they choose 1, we get only 1, so we avoid it if possible\n    \n    # Probability of choosing 0: if opponent chose 0 recently, increase chance\n    # Use a simple bias toward matching when it leads to higher payoff\n    if opponent_0_count > opponent_1_count:\n        # Opponent prefers 1, so if they choose 0, we match to get (2,1)\n        # We prefer 0 to match\n        return 0\n    else:\n        # Opponent chooses 1 more, we get only 1 if we match, so avoid matching\n        # Instead, choose 1 to get (1,2) \u2014 partner's preferred outcome\n        # But we prefer 0, so we still favor 0 unless opponent consistently chooses 1\n        # If opponent chooses 1 more, we pick 1 to get better partner payoff, but our payoff is only 1\n        # We balance with a small bias toward 0\n        return 1 if random.random() < 0.6 else 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.1344300508499146}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 7
+}

@@ -1,0 +1,27 @@
+{
+  "node_id": "root_0",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Implement a stacking ensemble with Random Forests as meta-model.",
+  "score": 0.890871871798088,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nfrom sklearn.model_selection import KFold\nfrom sklearn.ensemble import RandomForestRegressor, StackingRegressor\nfrom sklearn.linear_model import LinearRegression\nfrom sklearn.metrics import mean_squared_error\nfrom sklearn.preprocessing import StandardScaler\n\n# Load data\ntrain = pd.read_csv('data/train.csv')\ntest = pd.read_csv('data/test.csv')\n\n# Drop rows with missing target value\ntrain.dropna(subset=['SalePrice'], inplace=True)\n\n# Combine train and test sets for preprocessing\ncombined = pd.concat([train.drop(columns='SalePrice'), test], axis=0)\n\n# Fill numerical NaNs with median\nnumerical_cols = combined.select_dtypes(include=[float, int]).columns\ncombined[numerical_cols] = combined[numerical_cols].fillna(combined[numerical_cols].median())\n\n# Convert categorical variables to dummy variables\ncombined = pd.get_dummies(combined)\n\n# Split back into train and test sets\nX_train = combined.iloc[:len(train)]\nX_test = combined.iloc[len(train):]\n\n# Define base estimators\nbase_estimators = [\n    ('rf', RandomForestRegressor(n_estimators=100, random_state=42)),\n    ('lr', LinearRegression())\n]\n\n# Define meta-estimator\nmeta_estimator = LinearRegression()\n\n# Create stacker\nstacker = StackingRegressor(estimators=base_estimators, final_estimator=meta_estimator)\n\n# Scale features\nscaler = StandardScaler()\nX_train_scaled = scaler.fit_transform(X_train)\nX_test_scaled = scaler.transform(X_test)\n\n# Train stacker\nstacker.fit(X_train_scaled, train['SalePrice'])\n\n# Predict on test set\ny_pred = stacker.predict(X_test_scaled)\n\n# Prepare submission\nsubmission = pd.DataFrame({'Id': test['Id'], 'SalePrice': y_pred})\nsubmission.to_csv('submission.csv', index=False)\n\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'rmse': 30340.111853413255, 'r2': 0.8799891474739243}\nEvaluation Score: {'rmse': 28931.78773751117, 'r2': 0.890871871798088}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 9,
+  "reflection": null
+}

@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_0",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Bayesian Thompson-Sampling with Sliding-Window Forgetting  \n1. Maintain a Beta(\u03b1,\u03b2) posterior over the probability \u03b8 that the column player selects the row-preferred column C1.  \n2. After every round, update the posterior with \u03b1\u2190\u03bb\u03b1+I(C1), \u03b2\u2190\u03bb\u03b2+I(C2), where \u03bb\u2208(0,1) (e.g., 0.97) exponentially \u201cforgets\u2019\u2019 older evidence so the model can rapidly track strategy shifts.  \n3. Before acting, draw a sample \u03b8\u0303\u223cBeta(\u03b1,\u03b2). Compute expected payoffs of Up vs. Down under \u03b8\u0303 and play the action with the higher sampled value (pure Thompson sampling, no explicit \u03b5 needed).  \n4. Optional safety: if \u03b1+\u03b2 drops below a small threshold (insufficient data after a drastic switch), play each action once to re-seed the posterior.  \nThis probabilistic sampling naturally balances exploration and exploitation: when uncertainty is high the actions are tried more evenly; once a bias is detected the policy locks into the higher-value coordination until evidence suggests a change. Because the posterior is resampled every turn and old data decays, the agent adapts faster than the fixed-window \u03b5-greedy learner while still exploiting consistent opponents, increasing long-run average reward.",
+  "score": 1.207129955291748,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    \"\"\"\n    Bayesian Thompson-sampling with exponential forgetting.\n    Prefers action 0 (payoff 2) but adapts to opponent behaviour.\n    \"\"\"\n    # Initialise persistent parameters on first import\n    if not hasattr(row_strategy, \"_init\"):\n        row_strategy.decay = 0.97     # forgetting factor \u03bb\n        row_strategy.alpha = 1.0      # counts for opponent playing 0 (our preferred)\n        row_strategy.beta = 1.0       # counts for opponent playing 1\n        row_strategy.prev_len = 0     # how much of history we've already processed\n        row_strategy._init = True\n\n    # Detect new game (empty history) -> reset posterior, pick 0\n    if len(history) == 0:\n        row_strategy.alpha = 1.0\n        row_strategy.beta = 1.0\n        row_strategy.prev_len = 0\n        return 0  # start with preferred action\n\n    # Update posterior for each unprocessed past round\n    for i in range(row_strategy.prev_len, len(history)):\n        # Exponential decay of old evidence\n        row_strategy.alpha *= row_strategy.decay\n        row_strategy.beta *= row_strategy.decay\n\n        _, opp_move = history[i]\n        if opp_move == 0:\n            row_strategy.alpha += 1\n        else:\n            row_strategy.beta += 1\n\n    # Mark all history as processed\n    row_strategy.prev_len = len(history)\n\n    # Thompson sample \u03b8 ~ Beta(\u03b1,\u03b2)\n    theta = random.betavariate(row_strategy.alpha, row_strategy.beta)\n\n    # Expected payoffs for us\n    payoff_0 = 2 * theta             # both play 0 with prob \u03b8\n    payoff_1 = 1 * (1 - theta)       # both play 1 with prob 1-\u03b8\n\n    # Choose action with higher sampled value\n    return 0 if payoff_0 >= payoff_1 else 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.207129955291748}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

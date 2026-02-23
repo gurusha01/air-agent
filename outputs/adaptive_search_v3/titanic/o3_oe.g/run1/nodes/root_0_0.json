@@ -1,0 +1,26 @@
+{
+  "node_id": "root_0_0",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Adopt a self-supervised TabNet pipeline:  \n1) Pre-train TabNet with a masked\u2010feature reconstruction objective (unsupervised) on the full Titanic table, letting the network learn sparse attentive feature masks and non-linear interactions that CatBoost may miss.  \n2) Fine-tune the pre-trained weights on the survival labels with class-balanced focal loss (helps rare \u201cSurvived=1\u201d in males).  \n3) Represent all categorical columns (including Ticket, Cabin full string, Surname) with learned embeddings; keep numerical columns raw.  \n4) Add time-style augmentations: randomly drop (set as missing) 10\u201320 % of entries per batch during training to force robustness to missingness instead of letting the model rely on CatBoost\u2019s native handling.  \n5) Ensemble five fine-tuned TabNet models (different seeds) via averaged logits for the final prediction.  \nThis end-to-end deep tabular architecture can capture hierarchical relations that tree models smooth over, offering a complementary inductive bias that can push the CV AUC/accuracy past the current 0.9522 plateau.",
+  "score": 0.7703349282296651,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nimport torch\nimport torch.nn as nn\nfrom sklearn.preprocessing import StandardScaler\nfrom sklearn.metrics import accuracy_score\nfrom sklearn.model_selection import StratifiedKFold\nimport os\nimport warnings\nwarnings.filterwarnings(\"ignore\")\n\n# ---------------------------- DATA LOADING ----------------------------\ntrain_df = pd.read_csv(\"data/train.csv\")\ntest_df  = pd.read_csv(\"data/test.csv\")\n\n# ---------------------------- FEATURE ENGINEERING ---------------------\ndef extract_surname(name):\n    return name.split(',')[0].strip()\n\ndef extract_cabin_deck(cabin):\n    return cabin[0] if pd.notna(cabin) else 'U'\n\ndef extract_ticket_prefix(ticket):\n    t = ticket.replace('.', '').replace('/', '').strip()\n    p = t.split()[0]\n    return p if not p.isdigit() else 'NONE'\n\nfor df in (train_df, test_df):\n    df[\"Surname\"]      = df[\"Name\"].apply(extract_surname)\n    df[\"CabinDeck\"]    = df[\"Cabin\"].apply(extract_cabin_deck)\n    df[\"TicketPrefix\"] = df[\"Ticket\"].apply(extract_ticket_prefix)\n    df[\"FamilySize\"]   = df[\"SibSp\"] + df[\"Parch\"] + 1\n    df[\"IsAlone\"]      = (df[\"FamilySize\"] == 1).astype(int)\n\n# ---------------------------- CATEGORICAL PROCESSING ------------------\ncat_cols = [\"Pclass\", \"Sex\", \"Embarked\", \"CabinDeck\", \"TicketPrefix\", \"Surname\", \"IsAlone\"]\nnum_cols = [\"Age\", \"Fare\", \"SibSp\", \"Parch\", \"FamilySize\"]\n\n# Concatenate to fit global category mapping\nfull_df = pd.concat([train_df[cat_cols], test_df[cat_cols]], axis=0)\n\nencoders = {}\ncat_dims = []\nfor col in cat_cols:\n    full_df[col] = full_df[col].astype(\"category\")\n    encoders[col] = dict(enumerate(full_df[col].cat.categories, start=1))\n    # 0 will be reserved for unknown / NaN\n    cat_dims.append(len(encoders[col]) + 1)\n\n# Apply encoding\ndef encode_frame(df):\n    for col in cat_cols:\n        df[col] = df[col].astype(\"category\")\n        df[col] = df[col].cat.codes + 1  # -1 -> NaN becomes 0 after clip\n        df[col] = df[col]",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Saved submission.csv",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.7703349282296651}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 16
+}

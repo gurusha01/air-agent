@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0_0",
+  "parent_id": "root_2_0",
+  "depth": 3,
+  "strategy": "Implement a temporal difference learning (TD-learning) strategy where the row player updates their choice probability based on the difference between the actual payoff and the predicted payoff from a simple moving average of past outcomes. The prediction is updated every time a new choice is made, and the learning rate is decayed exponentially over time to prevent overfitting. This approach treats the game as a reinforcement learning problem, where the agent learns to anticipate future payoffs through feedback. The initial probability remains 0.5, and the strategy adapts by increasing the probability of the option that yielded a higher-than-expected payoff in the most recent interaction.",
+  "score": 0.7879700064659119,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Initialize parameters\n    prob_1 = 0.5  # initial probability of choosing 1\n    alpha = 0.1   # learning rate (decays over time)\n    gamma = 0.9   # discount factor\n    \n    # Track predicted payoffs and actual outcomes\n    predicted_payoff = 0.0\n    actual_payoff = 0.0\n    \n    # Extract last move\n    last_my_move, last_their_move = history[-1]\n    \n    # Compute actual payoff based on moves\n    if last_my_move == last_their_move:\n        actual_payoff = 2 if last_my_move == 1 else 1\n    else:\n        actual_payoff = 0\n    \n    # Update prediction using temporal difference\n    # We use a simple moving average of past payoffs\n    if len(history) <= 1:\n        # No past data, just use base probability\n        return random.choices([0, 1], weights=[1 - prob_1, prob_1])[0]\n    \n    # Compute average past payoff for each action\n    payoff_1 = 0\n    payoff_0 = 0\n    count_1 = 0\n    count_0 = 0\n    \n    for my_move, their_move in history:\n        if my_move == 1:\n            if my_move == their_move:\n                payoff_1 += 2\n            else:\n                payoff_1 += 0\n            count_1 += 1\n        else:\n            if my_move == their_move:\n                payoff_0 += 1\n            else:\n                payoff_0 += 0\n            count_0 += 1\n    \n    # Avoid division by zero\n    avg_payoff_1 = payoff_1 / count_1 if count_1 > 0 else 0\n    avg_payoff_0 = payoff_0 / count_0 if count_0 > 0 else 0\n    \n    # Update predicted payoff (simple average)\n    predicted_payoff = (avg_payoff_1 * prob_1 + avg_payoff_0 * (1 - prob_1))\n    \n    # Compute TD error\n    td_error = actual_payoff - predicted_payoff\n    \n    # Update probability using TD learning with decaying learning rate\n    alpha *= 0.99  # decay learning rate\n    prob_1 += alpha * td_error\n    \n    # Clamp probability between 0 and 1\n    prob_1 = max(0, min(1, prob_1))\n    \n    return rando",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.7879700064659119}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 17
+}

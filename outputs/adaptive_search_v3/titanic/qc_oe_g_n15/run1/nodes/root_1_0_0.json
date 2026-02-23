@@ -1,0 +1,27 @@
+{
+  "node_id": "root_1_0_0",
+  "parent_id": "root_1_0",
+  "depth": 3,
+  "strategy": "Implement a Random Forest classifier with grid search to find the optimal hyperparameters.",
+  "score": 0.861244019138756,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nfrom sklearn.model_selection import train_test_split, GridSearchCV\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.metrics import accuracy_score\n\n# Load data\ntrain_data = pd.read_csv('data/train.csv')\ntest_data = pd.read_csv('data/test.csv')\n\n# Preprocess data\nfeatures = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']\nX_train = train_data[features].copy()\nX_test = test_data[features].copy()\n\nfor col in features:\n    if X_train[col].dtype == 'object':\n        X_train[col] = X_train[col].astype('category').cat.codes\n        X_test[col] = X_test[col].astype('category').cat.codes\n    else:\n        X_train[col] = X_train[col].fillna(X_train[col].median())\n        X_test[col] = X_test[col].fillna(X_test[col].median())\n\ny_train = train_data['Survived']\n\n# Define parameter grid\nparam_grid = {\n    'n_estimators': [50, 100, 200],\n    'max_depth': [None, 10, 20, 30],\n    'min_samples_split': [2, 5, 10],\n    'min_samples_leaf': [1, 2, 4],\n    'bootstrap': [True, False]\n}\n\n# Initialize RandomForestClassifier and GridSearchCV\nrf_classifier = RandomForestClassifier(random_state=42)\ngrid_search = GridSearchCV(estimator=rf_classifier, param_grid=param_grid, cv=5, scoring='accuracy', n_jobs=-1)\n\n# Fit model\ngrid_search.fit(X_train, y_train)\n\n# Make predictions\ny_pred = grid_search.predict(X_test)\n\n# Evaluate\naccuracy = accuracy_score(y_train, grid_search.best_estimator_.predict(X_train))\nprint(f'Train Accuracy: {accuracy:.4f}')\n\n# Save submission\nsubmission = pd.DataFrame({'PassengerId': test_data['PassengerId'], 'Survived': y_pred})\nsubmission.to_csv('submission.csv', index=False)\n\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Train Accuracy: 0.9192",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'Accuracy': 0.76555}\nEvaluation Score: {'accuracy': 0.861244019138756}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 29,
+  "reflection": null
+}

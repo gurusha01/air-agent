@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0_0",
+  "parent_id": "root_2_0",
+  "depth": 3,
+  "strategy": "Bayesian Hidden-Markov Thompson Sampling: treat the opponent as switching between two latent states (L-biased, R-biased) with unknown transition matrix.  Maintain a 2\u00d72 Dirichlet prior over transition probs and Beta priors over emission biases for each state.  Online, use particle filtering (\u224850 particles) to update the posterior of the current latent state after each move.  For action selection, draw one full model (transition + emissions + current state) from the posterior (Thompson step) and best-respond to that sampled model.  This yields automatic exploration (via posterior variance) and built-in change-point adaptation (via latent-state transitions) without ad-hoc hypothesis tests or fixed windows.  Resampling every turn keeps computation O(#particles).  Hyper-priors: Dirichlet(1,1) for transitions, Beta(2,2) for emissions.  Adapt particle count if ESS < 15.",
+  "score": 1.2259899377822876,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\n# Global variables to maintain state across rounds within a single 10-turn match\nNUM_PARTICLES = 50\nparticles = None       # list of particle dictionaries\nlast_len   = 0         # length of history we have already incorporated\n\ndef _init_particles():\n    \"\"\"Create an initial particle set with vague priors.\"\"\"\n    plist = []\n    for _ in range(NUM_PARTICLES):\n        # Each particle carries: current latent state (0=L-biased, 1=R-biased),\n        # Dirichlet counts for its 2\u00d72 transition matrix, and Beta counts for\n        # emission biases of the two states.  Hyper-priors: Dirichlet(1,1),\n        # Beta(2,2) as requested.\n        p = {\n            \"state\": random.choice([0, 1]),\n            \"trans\": [[1, 1], [1, 1]],           # Dirichlet counts\n            \"emis\":  [[2, 2], [2, 2]]            # [alpha(1), beta(0)] per state\n        }\n        plist.append(p)\n    return plist\n\ndef _update_particles(last_opp_move):\n    \"\"\"Bayesian update + propagation for every particle given latest emission.\"\"\"\n    for p in particles:\n        s = p[\"state\"]\n\n        # Update emission Beta counts for observed move in current state\n        if last_opp_move == 1:\n            p[\"emis\"][s][0] += 1\n        else:\n            p[\"emis\"][s][1] += 1\n\n        # Sample a transition matrix row from Dirichlet posterior\n        a0, a1 = p[\"trans\"][s]\n        g0 = random.gammavariate(a0, 1.0)\n        g1 = random.gammavariate(a1, 1.0)\n        prob_next0 = g0 / (g0 + g1)\n\n        # Draw next latent state and update transition counts\n        next_state = 0 if random.random() < prob_next0 else 1\n        p[\"trans\"][s][next_state] += 1\n        p[\"state\"] = next_state\n\ndef _thompson_action():\n    \"\"\"Sample one full model (particle) and best-respond to it.\"\"\"\n    p = random.choice(particles)\n    s = p[\"state\"]\n    alpha1, beta0 = p[\"emis\"][s]\n\n    # Draw emission probability \u03b8 from Beta posterior of current state\n    theta = random.betavariate(alpha1, beta0)\n\n  ",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.2259899377822876}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 15
+}

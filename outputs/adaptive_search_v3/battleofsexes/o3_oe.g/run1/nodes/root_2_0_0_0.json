@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0_0_0",
+  "parent_id": "root_2_0_0",
+  "depth": 4,
+  "strategy": "Strategy: Recency-Weighted n-Gram Ensemble (RWnGE)\n\n1. Feature Bank  \n   \u2022 For each history length n = 1\u20266, keep a hash table T\u2099 mapping the last n opponent moves to counts {Opera, Football}.  \n   \u2022 Apply exponential time-decay \u03bb=0.97 per round to every count in T\u2099, so old evidence gradually vanishes (no manual pruning).\n\n2. Probabilistic Prediction  \n   \u2022 For the current suffix of length n, read the decayed counts c\u2099(O), c\u2099(F).  \n   \u2022 Convert to a Laplace-smoothed estimate p\u2099 = (c\u2099(O)+1)/(c\u2099(O)+c\u2099(F)+2).  \n   \u2022 Aggregate with weights w\u2099 \u221d n\u00b2 (longer suffixes preferred) and normalise:  \n        P\u0302(Opera)= \u03a3\u2099 w\u2099 p\u2099 / \u03a3\u2099 w\u2099.  \n   This ensemble captures both recent local patterns (n small) and longer motifs (n large), outperforming pure i.i.d. or fixed-window models on opponents with Markov or periodic styles.\n\n3. Action Selection  \n   \u2022 Best respond as before: play Opera iff 2\u00b7P\u0302 \u2265 1\u2212P\u0302.\n\n4. Complexity  \n   O(6) update time; memory bounded by the number of distinct observed n-grams, automatically forgetting obsolete patterns via decay.\n\nWhy Different: RWnGE is a variable-order Markov predictor with continual forgetting, whereas CABL assumes piece-wise i.i.d. blocks. It exploits short deterministic streaks (e.g., alternating or repeating cycles) that changepoint detection treats as noise, improving expected payoff against pattern-heavy pilots while staying robust through decay.",
+  "score": 1.440540075302124,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nfrom collections import defaultdict\n\ndef row_strategy(history):\n    \"\"\"\n    Recency-Weighted n-Gram Ensemble (RWnGE) predictor (n = 1..6, decay \u03bb = 0.97).\n\n    \u2022 For every n (1-6) keep a table that maps the last n opponent moves to\n      decayed counts of the *following* move (0/1).\n    \u2022 After each round all counts are multiplied by \u03bb, then the newest (context,\n      next_move) pair is added (+1).\n    \u2022 Prediction: for each n with available context, compute Laplace-smoothed\n      p_n and combine with weights w_n \u221d n\u00b2.\n    \u2022 Best-respond: play 0 if 2\u00b7P\u0302 \u2265 1\u2212P\u0302, else 1 (threshold 1/3).\n    \"\"\"\n\n    # Initialise persistent state at start of each new game\n    if not history or not hasattr(row_strategy, \"tables\"):\n        row_strategy.tables = [defaultdict(lambda: [0.0, 0.0]) for _ in range(6)]\n        row_strategy.last_len = 0\n        row_strategy.lambda_ = 0.97\n\n    # Shortcut variables\n    tables = row_strategy.tables\n    lam = row_strategy.lambda_\n    opp_moves = [them for _, them in history]\n\n    # Decay and update for every newly observed opponent move\n    for i in range(row_strategy.last_len, len(opp_moves)):\n        # Exponential decay of all counts\n        for table in tables:\n            for counts in table.values():\n                counts[0] *= lam\n                counts[1] *= lam\n\n        # Update n-gram counts using contexts that end just before move i\n        for n in range(1, 7):\n            if i - n < 0:\n                break\n            context = tuple(opp_moves[i - n:i])\n            table = tables[n - 1]\n            table[context][opp_moves[i]] += 1.0\n\n    # Record processed length\n    row_strategy.last_len = len(opp_moves)\n\n    # First move: default to our preferred 0\n    if not history:\n        return 0\n\n    # Aggregate predictions from available n-grams\n    weighted_sum = 0.0\n    weight_total = 0.0\n    for n in range(1, 7):\n        if len(opp_moves) < n:\n            continue\n        context = tuple(opp_",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.440540075302124}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 22
+}

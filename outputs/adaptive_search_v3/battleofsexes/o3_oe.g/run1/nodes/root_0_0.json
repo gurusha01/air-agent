@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_0",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Tabular-Q Learner with \u201cmemory-1\u201d states\n\n1. State space: s\u209c = (my last action, opponent last action) \u2208 {RR, RC, CR, CC}+BEGIN for the first move.  \n2. Action space: {R,C}.  \n3. Initialise Q(s,a)=1.5 (optimistic) so the agent actively searches for pay\u2010off 2 equilibria.  \n4. Learning rule (on-line):  \n   Q(s\u209c,a\u209c) \u2190 (1\u2212\u03b1)\u00b7Q(s\u209c,a\u209c)+\u03b1\u00b7[r\u209c+\u03b3\u00b7max\u2090 Q(s\u209c\u208a\u2081,a)],  \n   \u03b1 = 0.15 decaying by 0.995 per round, \u03b3 = 0.9.  \n5. Behaviour policy: \u03b5-greedy with \u03b5\u2080=0.25 decaying to 0.02; additionally, if the same state repeats twice consecutively, set \u03b5=0 (hard exploitation) until the Q-max action fails twice.  \n6. \u201cPavlov boost\u201d: after receiving payoff 2, force repeat the same action next round (overrides \u03b5-greedy) to reinforce successful coordination quickly.  \n7. Exploration never fully vanishes, allowing adaptation to non-stationary opponents; optimistic start plus Pavlov bias drives the learner toward (R,R) when plausible, but it can settle on (C,C) if (R,R) proves unstable.  \n8. Requires only five Q-tables and simple arithmetic, no Bayesian beliefs or priors.",
+  "score": 0.7522199153900146,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    \"\"\"\n    Tabular Q-learning with memory-1 state, \u03b5-greedy exploration,\n    optimistic initial values, and a Pavlov boost after payoff 2.\n    \"\"\"\n    # ---------- one-time global initialisation ----------\n    if not hasattr(row_strategy, \"Q\"):\n        # Q[state][action] = value, optimistic start 1.5\n        row_strategy.Q = {('BEGIN',): [1.5, 1.5]}\n        for my in (0, 1):\n            for opp in (0, 1):\n                row_strategy.Q[(my, opp)] = [1.5, 1.5]\n        # learning / exploration hyper-parameters\n        row_strategy.gamma = 0.9\n        row_strategy.base_alpha = 0.15\n        row_strategy.base_epsilon = 0.25\n\n    # ---------- new game reset (detected by empty history) ----------\n    if len(history) == 0:\n        row_strategy.last_state = ('BEGIN',)  # dummy start state\n        row_strategy.last_action = None\n        row_strategy.alpha = row_strategy.base_alpha\n        row_strategy.epsilon = row_strategy.base_epsilon\n        row_strategy.pavlov_next = False\n\n    # ---------- Q-update using outcome of previous round ----------\n    if history:\n        # Previous transition is fully known now\n        my_prev, opp_prev = history[-1]\n        reward = 2 if (my_prev == 0 and opp_prev == 0) else (\n            1 if (my_prev == 1 and opp_prev == 1) else 0\n        )\n\n        # Current observable state (after previous round)\n        current_state = (my_prev, opp_prev)\n\n        if row_strategy.last_action is not None:\n            qs = row_strategy.Q[row_strategy.last_state]\n            max_next = max(row_strategy.Q[current_state])\n            # Q-learning update\n            qs[row_strategy.last_action] = (\n                (1 - row_strategy.alpha) * qs[row_strategy.last_action]\n                + row_strategy.alpha * (reward + row_strategy.gamma * max_next)\n            )\n\n        # Pavlov boost: if payoff 2, repeat the same move next round\n        row_strategy.pavlov_next = reward == 2\n\n        #",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.7522199153900146}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

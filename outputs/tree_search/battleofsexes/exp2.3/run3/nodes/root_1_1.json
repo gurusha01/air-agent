@@ -1,0 +1,21 @@
+{
+  "node_id": "root_1_1",
+  "parent_id": "root_1",
+  "depth": 2,
+  "strategy": "Variation: Apply a dynamic threshold for triggering confidence boosts. Instead of boosting confidence by 10% per matching round, only increase the weight if the opponent's choice matches the prediction for at least 2 consecutive rounds. This prevents small, random fluctuations from triggering false confidence and filters out noise. After a streak of 2 or more correct predictions, add a 10% confidence boost. If the streak breaks, reset the counter. This improves stability and reduces false positives in noisy or unpredictable play.",
+  "score": 0.524090051651001,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Track consecutive correct predictions (streak of 2 or more)\n    streak_count = 0\n    for i in range(len(history) - 1):\n        our_last, their_last = history[i]\n        if i < len(history) - 1:\n            current_our_move = history[i+1][0]\n            current_their_move = history[i+1][1]\n            # Check if opponent mirrored our last move\n            if current_their_move == their_last:\n                streak_count += 1\n            else:\n                streak_count = 0\n        # Only consider a streak if it's at least 2\n        if streak_count >= 2:\n            # Apply a confidence boost: deviate to avoid coordination\n            return 1\n        elif streak_count == 1:\n            # One match \u2014 not enough to trigger confidence\n            pass\n    \n    # If no long streak, use base preference (0)\n    # Only deviate if opponent shows strong mirroring pattern\n    their_moves = [move for _, move in history]\n    our_moves = [move for move, _ in history]\n    \n    # Check for strong mirroring (more than 70% of the time)\n    mirror_count = sum(1 for i in range(1, len(their_moves)) if their_moves[i] == our_moves[i-1])\n    if mirror_count > 0.7 * (len(their_moves) - 1):\n        return 1\n    \n    return 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.524090051651001}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

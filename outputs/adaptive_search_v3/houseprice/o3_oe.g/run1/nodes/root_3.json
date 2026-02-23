@@ -1,0 +1,10 @@
+{
+  "node_id": "root_3",
+  "parent_id": "root",
+  "depth": 1,
+  "strategy": "Variation #1 \u2013 LightGBM \u201cdeep-leaf + noise\u201d tweak  \nStay with a single LightGBM model but (a) increase tree complexity, (b) slow learning, and (c) add very light Gaussian noise to numeric features during training to improve generalisation.\n\nConcrete changes to the current baseline LightGBM:\n\n1. Hyper-parameters  \n   \u2022 num_leaves: 2\u00d7 current (e.g. 64 \u2192 128)  \n   \u2022 max_depth: \u20111 (unlimited)  \n   \u2022 min_data_in_leaf: 5 (was 20)  \n   \u2022 learning_rate: 0.02 (was 0.05)  \n   \u2022 n_estimators: 5000 with early_stopping_rounds=200  \n   \u2022 feature_fraction: 0.8  \n   \u2022 bagging_fraction: 0.8, bagging_freq: 1  \n   \u2022 lambda_l1: 1.0, lambda_l2: 1.0 (adds mild regularisation)\n\n2. Target & feature preprocessing  \n   \u2022 Keep SalePrice = log1p(SalePrice).  \n   \u2022 Standard baseline imputations, one-hot encoding.  \n   \u2022 On-the-fly, add \u03b5 ~ N(0, 0.001\u00b7\u03c3_feature) to each numeric feature per boosting iteration (implemented via LightGBM\u2019s \u201cfeature_fraction_seed\u201d hack or manual noise augmentation).\n\n3. Training protocol  \n   \u2022 5-fold K-fold CV; save OOF predictions; average CV models for submission.  \n   \u2022 Use categorical_feature=\u2018auto\u2019 so LightGBM handles one-hots natively.\n\nWhy it may help  \nDeeper trees + lower learning rate let the model capture higher-order interactions the baseline missed, while noise injection and L1/L2 keep overfitting in check. This often bumps R\u00b2 by 0.005-0.01 on this data set.\n\nImplementation effort: \u224830 lines difference from baseline notebook.",
+  "score": null,
+  "error": "LLM failed: LLM failed after 3 attempts: Error code: 400 - {'error': {'message': \"This model's maximum context length is 200000 tokens. However, your messages resulted in 794211 tokens. Please reduce the length of the messages.\", 'type': 'invalid_request_error', 'param': 'messages', 'code': 'context_length_exceeded'}}",
+  "actions": [],
+  "conversation_length": 15
+}

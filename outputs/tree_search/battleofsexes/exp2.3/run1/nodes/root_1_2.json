@@ -1,0 +1,21 @@
+{
+  "node_id": "root_1_2",
+  "parent_id": "root_1",
+  "depth": 2,
+  "strategy": "Add a small bias term (e.g., +0.05) to the probability of the less frequently chosen action, ensuring that the strategy remains balanced even during periods of high decay. This prevents the system from drifting toward extreme exploitation of a single action and maintains a consistent level of mixing. The decay factor remains at 95%, but the added bias ensures that both actions are given a non-negligible chance, which is critical in a coordination game like Battle of Sexes.",
+  "score": 0.7092300057411194,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Count frequencies of past moves\n    move_counts = {0: 0, 1: 0}\n    for _, move in history:\n        move_counts[move] += 1\n    \n    # Base probability based on frequency (inverse frequency)\n    total = sum(move_counts.values())\n    if total == 0:\n        return 0\n    \n    # Probability of choosing 0: inversely proportional to frequency, with decay\n    prob_0 = 1.0 / (move_counts[0] + 1) * 0.95\n    prob_1 = 1.0 / (move_counts[1] + 1) * 0.95\n    \n    # Apply adaptive decay: 95% decay per round to encourage exploration\n    prob_0 *= 0.95\n    prob_1 *= 0.95\n    \n    # Add small bias to the less frequent action to maintain balance\n    # Bias of +0.05 ensures both actions have non-negligible chance\n    if move_counts[0] < move_counts[1]:\n        prob_0 += 0.05\n    else:\n        prob_1 += 0.05\n    \n    # Normalize probabilities\n    total_prob = prob_0 + prob_1\n    if total_prob == 0:\n        return 0\n    \n    prob_0 /= total_prob\n    prob_1 /= total_prob\n    \n    # Random selection\n    if random.random() < prob_0:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.7092300057411194}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_2",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Apply the Gaussian smoothing not to raw payoffs, but to the difference between observed payoffs and the baseline expected value (i.e., normalize the deviations first). This centers the smoothing around the mean, reducing bias from systematic shifts in baseline preferences over time.",
+  "score": 0.1810000091791153,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\nimport numpy as np\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Convert history to numpy array for easier manipulation\n    moves = np.array([[m[0], m[1]] for m in history])\n    \n    # Extract your moves and their moves\n    your_moves = moves[:, 0]\n    their_moves = moves[:, 1]\n    \n    # Compute baseline expected payoff: both 0 gives (2,1), both 1 gives (1,2)\n    # The baseline expected value when both match: (2 + 1) / 2 = 1.5\n    # Deviation from baseline: payoff difference when both pick same strategy\n    # We calculate observed payoffs for each match (0,0) and (1,1)\n    payoff_00 = 2  # payoff when both pick 0\n    payoff_11 = 1  # payoff when both pick 1\n    baseline = (payoff_00 + payoff_11) / 2  # 1.5\n    \n    # Compute observed payoffs for each match\n    match_payoffs = []\n    for i in range(len(history)):\n        my_move, their_move = history[i]\n        if my_move == their_move:\n            match_payoffs.append(payoff_00 if my_move == 0 else payoff_11)\n        else:\n            match_payoffs.append(0)\n    \n    # Compute deviations from baseline\n    deviations = np.array(match_payoffs) - baseline\n    \n    # Apply 10% Gaussian smoothing to the deviations (not raw moves)\n    window_size = 3\n    smoothed_deviations = np.convolve(deviations, np.ones(window_size)/window_size, mode='valid')\n    \n    # Use smoothed deviation to adjust strategy choice\n    # If deviation is positive, more matches are favorable for (0,0) \u2192 prefer 0\n    # If deviation is negative, more matches are favorable for (1,1) \u2192 prefer 1\n    \n    if len(smoothed_deviations) == 0:\n        return 0\n    \n    last_smoothed_deviation = smoothed_deviations[-1]\n    \n    # If deviation is positive (more (0,0) matches), prefer 0\n    # If deviation is negative (more (1,1) matches), prefer 1\n    if last_smoothed_deviation > 0:\n        return 0\n    else:\n        return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.1810000091791153}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

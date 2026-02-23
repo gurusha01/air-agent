@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_1",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "Apply a weighted moving average instead of a simple moving average, where more recent rounds are given higher weight (e.g., using weights [0.2, 0.2, 0.2, 0.2, 0.2] for 5 rounds, with the most recent round at 0.3 and the others at 0.15). This gives greater responsiveness to recent changes in the column player\u2019s behavior while still maintaining stability, allowing the row player to adapt faster to emerging patterns without overfitting.",
+  "score": 1.326259970664978,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 5:\n        return 0\n    \n    # Extract the last 5 moves of the opponent\n    opponent_moves = [entry[1] for entry in history[-5:]]\n    \n    # Apply weighted moving average: more weight on most recent move\n    weights = [0.15, 0.15, 0.15, 0.15, 0.3]  # Most recent gets 0.3, others 0.15\n    weighted_avg = sum(opponent_moves[i] * weights[i] for i in range(5)) / sum(weights)\n    \n    # If the weighted average is above 0.5, opponent is likely to play 1\n    # Since we prefer strategy 0 and get 2 when both play 0, we play 0 to maximize our payoff\n    # But if opponent is likely to play 1, we still get 1 when both play 1, which is better than 0\n    # So we play 0 if weighted_avg < 0.5, 1 if weighted_avg >= 0.5?\n    # No \u2014 we prefer 0, so we want to coordinate on 0 (payoff 2)\n    # So if opponent is likely to play 0, we play 0 \u2192 get 2\n    # If opponent is likely to play 1, we play 1 \u2192 get 1 (still better than 0)\n    # But we want to maximize our own payoff\n    \n    # When opponent plays 0 \u2192 we play 0 \u2192 get 2\n    # When opponent plays 1 \u2192 we play 1 \u2192 get 1\n    # If we play 0 when they play 1 \u2192 get 0\n    \n    # So we should play 1 only if we believe they will play 1 and we get 1 > 0\n    # But 1 is better than 0, so if opponent is likely to play 1, we play 1\n    \n    # However, we prefer 0, so we want to avoid playing 1 unless necessary\n    # But the payoff structure makes playing 1 when they play 1 better than playing 0\n    \n    # Therefore: if weighted_avg >= 0.5, play 1; else play 0\n    if weighted_avg >= 0.5:\n        return 1\n    else:\n        return 0\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.326259970664978}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

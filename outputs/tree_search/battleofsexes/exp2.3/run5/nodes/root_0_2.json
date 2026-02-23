@@ -1,0 +1,21 @@
+{
+  "node_id": "root_0_2",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Implement a decay factor on the historical response count, where the influence of actions from more than 3 rounds ago is reduced exponentially (with a decay rate of 0.9). This balances responsiveness to recent behavior with memory of past patterns, preventing the strategy from overreacting to outdated data while still detecting consistent trends.",
+  "score": 0.4518299698829651,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 3:\n        # In early rounds, random choice to avoid predictability\n        return random.randint(0, 1)\n    \n    # Decay factor for historical influence (0.9 means recent actions have more weight)\n    decay_rate = 0.9\n    \n    # Calculate weighted sum of opponent's moves in the last 5 rounds (to allow for a bit more memory)\n    total_weighted_opponent_moves = 0\n    total_weight = 0\n    \n    for i in range(len(history)):\n        # Apply exponential decay: weight decreases as distance from now increases\n        distance = len(history) - i - 1\n        weight = decay_rate ** distance\n        total_weighted_opponent_moves += history[i][1] * weight\n        total_weight += weight\n    \n    # Normalize to get probability of opponent choosing 1\n    if total_weight == 0:\n        # Fallback to random\n        return random.randint(0, 1)\n    \n    weighted_opponent_1 = total_weighted_opponent_moves / total_weight\n    \n    # If opponent has a high tendency to choose 1 (e.g., > 0.7), we respond with 0\n    # This exploits the payoff when both pick 0 (we prefer 0)\n    if weighted_opponent_1 >= 0.7:\n        return 0\n    else:\n        # Otherwise, we match their choice to get payoff 2 when both pick 1 (they prefer 1)\n        return 1\n\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 0.4518299698829651}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}
