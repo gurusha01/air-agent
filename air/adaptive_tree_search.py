@@ -79,6 +79,8 @@ import os
 import re
 import statistics
 import time
+
+import numpy as np
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -104,6 +106,7 @@ from air.tree_search import (
     STRATEGY_PROMPT_LOCAL,
     MLGYM_PATH,
 )
+from air.reflexion import build_reflection, inject_error_analysis_script, error_analysis_hint
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +881,139 @@ class OpenEndedSelectionPolicy:
         return "explore" if (e + t) > q else "exploit"
 
 
+class SoftmaxSelectionPolicy:
+    """Softmax sampling over composite score (ALMA-inspired).
+
+    Instead of argmax selection, nodes are sampled with probability
+    proportional to softmax(score / tau). This naturally prevents
+    chain degeneration because even non-optimal nodes get expanded.
+
+    Composite score:
+        score(node) = Q + C*sqrt(ln(N)/(n+1)) + W_trend*trend - alpha*log(1+visits)
+
+    The visit penalty (-alpha * log(1 + visits)) ensures that repeatedly
+    expanded nodes become less attractive, forcing the tree to branch.
+    """
+
+    def __init__(
+        self,
+        c: float = 1.41,
+        trend_weight: float = 0.5,
+        tau: float = 0.5,
+        visit_alpha: float = 0.5,
+        task_profile: TaskProfile | None = None,
+    ):
+        self.c = c
+        self.trend_weight = trend_weight
+        self.tau = tau
+        self.visit_alpha = visit_alpha
+        self.task = task_profile
+
+    def select(
+        self,
+        nodes: dict[str, TreeNode],
+        candidates: list[str],
+        global_best: float,
+        total_expansions: int = 1,
+    ) -> tuple[str, dict[str, float], dict[str, str]]:
+        if not candidates:
+            raise ValueError("No candidates to select from")
+
+        if len(candidates) == 1:
+            mode = self._compute_mode(nodes[candidates[0]], nodes, global_best, total_expansions)
+            return candidates[0], {candidates[0]: 1.0}, {candidates[0]: mode}
+
+        N = max(total_expansions, 1)
+        ln_N = math.log(N)
+
+        raw_scores = {}
+        mode_hints = {}
+        debug_parts = {}
+
+        for cid in candidates:
+            node = nodes[cid]
+            n_children = len(node.children)
+
+            # Q(node) = exploitation value
+            best_child_score = self._best_descendant_score(node, nodes)
+            q_value = best_child_score / global_best if global_best > 0 else best_child_score
+
+            # UCB exploration bonus
+            explore_bonus = self.c * math.sqrt(ln_N / (n_children + 1))
+
+            # Trend bonus
+            trend = self._compute_trend(cid, nodes)
+            trend_bonus = self.trend_weight * max(trend, 0.0)
+
+            # Visit penalty (ALMA-inspired)
+            visit_penalty = self.visit_alpha * math.log1p(n_children)
+
+            raw_scores[cid] = q_value + explore_bonus + trend_bonus - visit_penalty
+            debug_parts[cid] = (q_value, explore_bonus, trend_bonus, visit_penalty, trend)
+
+            mode_hints[cid] = "explore" if (explore_bonus + trend_bonus) > q_value else "exploit"
+
+        # Softmax sampling
+        score_vals = np.array([raw_scores[c] for c in candidates])
+        logits = score_vals / max(self.tau, 1e-8)
+        logits = logits - np.max(logits)  # numerical stability
+        exp_scores = np.exp(logits)
+        probs = exp_scores / np.sum(exp_scores)
+
+        selected_idx = np.random.choice(len(candidates), p=probs)
+        selected_cid = candidates[selected_idx]
+
+        # Debug output
+        print(f"\n  Softmax scores ({len(candidates)} candidates, C={self.c:.2f}, "
+              f"tau={self.tau:.2f}, alpha={self.visit_alpha:.2f}, N={N}):")
+        sorted_cands = sorted(candidates, key=lambda c: raw_scores[c], reverse=True)
+        for c in sorted_cands[:7]:
+            q, e, t, vp, raw_t = debug_parts[c]
+            n_ch = len(nodes[c].children)
+            p = probs[candidates.index(c)]
+            marker = " <-- SELECTED" if c == selected_cid else ""
+            print(f"    {c}: {raw_scores[c]:.3f} = Q={q:.3f} + ucb={e:.3f} + trend={t:.3f}"
+                  f" - visit={vp:.3f}  (p={p:.3f}, children={n_ch}, mode={mode_hints[c]}){marker}")
+
+        return selected_cid, raw_scores, mode_hints
+
+    def _compute_trend(self, node_id: str, nodes: dict[str, TreeNode]) -> float:
+        """Compute improvement trend along path from root to node."""
+        path_scores = []
+        current = nodes.get(node_id)
+        while current is not None:
+            if current.score is not None:
+                path_scores.append(current.score)
+            current = nodes.get(current.parent_id) if current.parent_id else None
+        path_scores.reverse()
+        if len(path_scores) < 2:
+            return 0.0
+        deltas = []
+        weights = []
+        for i in range(1, len(path_scores)):
+            deltas.append(path_scores[i] - path_scores[i - 1])
+            weights.append(i)
+        total_weight = sum(weights)
+        return sum(d * w for d, w in zip(deltas, weights)) / total_weight if total_weight else 0.0
+
+    def _best_descendant_score(self, node: TreeNode, nodes: dict[str, TreeNode]) -> float:
+        child_scores = [
+            nodes[cid].score for cid in node.children
+            if cid in nodes and nodes[cid].score is not None
+        ]
+        if child_scores:
+            return max(child_scores) if (self.task and self.task.higher_is_better) else min(child_scores)
+        return node.score if node.score is not None else 0.0
+
+    def _compute_mode(self, node, nodes, global_best, total_expansions):
+        n_children = len(node.children)
+        best = self._best_descendant_score(node, nodes)
+        q = best / global_best if global_best > 0 else best
+        e = self.c * math.sqrt(math.log(max(total_expansions, 1)) / (n_children + 1))
+        t = self.trend_weight * max(self._compute_trend(node.node_id, nodes), 0.0)
+        return "explore" if (e + t) > q else "exploit"
+
+
 # ---------------------------------------------------------------------------
 # Tree Context Builder — generates context for the child agent
 # ---------------------------------------------------------------------------
@@ -1021,6 +1157,7 @@ class AdaptiveTreeSearch:
         selection_strategy: str = "signals",
         output_dir: str = "outputs/adaptive_search",
         verbose: bool = False,
+        reflexion: bool = True,
     ):
         self.llm = llm
         self.container = container
@@ -1037,6 +1174,7 @@ class AdaptiveTreeSearch:
         self.selection_strategy = selection_strategy  # "signals", "ucb", or "open-ended"
         self.output_dir = Path(output_dir)
         self.verbose = verbose
+        self.reflexion = reflexion
         self.nodes: dict[str, TreeNode] = {}
         self._child_counter: dict[str, int] = {}  # tracks next child index per parent
 
@@ -1107,7 +1245,7 @@ class AdaptiveTreeSearch:
                 break
 
             # 1. SELECT + 2. DECIDE: strategy-dependent
-            if self.selection_strategy in ("ucb", "open-ended"):
+            if self.selection_strategy in ("ucb", "open-ended", "softmax"):
                 # UCB and open-ended policies return mode hints directly
                 selected_id, debug_scores, mode_hints = self.policy.select(
                     self.nodes, candidates, global_best,
@@ -1146,6 +1284,10 @@ class AdaptiveTreeSearch:
             {"role": "system", "content": self.task.system_prompt},
             {"role": "user", "content": task_desc},
         ]
+
+        # Inject error analysis script before snapshot so it's baked in
+        if self.reflexion:
+            inject_error_analysis_script(self.container, self.task)
 
         snap = self.container.save_snapshot("root")
         baseline = self.container.baseline_score
@@ -1217,6 +1359,14 @@ class AdaptiveTreeSearch:
         self._child_counter[parent_id] += 1
         child_id = f"{parent_id}_{child_idx}"
 
+        # Tree-level reflection (if enabled and we have scored nodes)
+        reflection = ""
+        if self.reflexion and len(self.nodes) > 1:
+            reflection = build_reflection(
+                self.llm, self.nodes, parent_id, self.task,
+                baseline_score=self.container.baseline_score,
+            )
+
         # Generate strategy based on mode
         strategy_text = self._generate_strategy(parent, mode)
         if not strategy_text:
@@ -1232,7 +1382,7 @@ class AdaptiveTreeSearch:
             )
 
         # Build child conversation
-        child_msgs = self._build_child_messages(parent, strategy_text, mode)
+        child_msgs = self._build_child_messages(parent, strategy_text, mode, reflection)
 
         # Execute until validate
         try:
@@ -1257,6 +1407,7 @@ class AdaptiveTreeSearch:
             conversation_history=final_msgs,
             snapshot_path=snap,
             error=error,
+            reflection=reflection,
         )
         self.nodes[child_id] = child
         parent.children.append(child_id)
@@ -1277,9 +1428,20 @@ class AdaptiveTreeSearch:
 
         We generate just 1 strategy (not N) since we're expanding one child
         at a time in the MCTS loop.
+
+        Sibling awareness: collects strategies already tried from this parent
+        and passes them to the LLM so it avoids repeating the same approach.
         """
         is_baseline = len(parent.actions) == 0
         approach_summary = "No solution yet (baseline only)" if is_baseline else parent.strategy
+
+        # Collect sibling strategies for diversity
+        sibling_info = []
+        for cid in parent.children:
+            if cid in self.nodes:
+                sib = self.nodes[cid]
+                score_str = f"{sib.score:.4f}" if sib.score is not None else "FAILED"
+                sibling_info.append(f"- {sib.strategy[:120]} -> {score_str}")
 
         sampling_mode = "tail" if mode == "explore" else "local"
         strategies = self.llm.generate_strategies(
@@ -1289,12 +1451,14 @@ class AdaptiveTreeSearch:
             n=1,
             sampling_mode=sampling_mode,
             task_topic=self.task.strategy_topic,
+            sibling_info=sibling_info if sibling_info else None,
         )
 
         return strategies[0][0] if strategies else ""
 
     def _build_child_messages(
-        self, parent: TreeNode, strategy_text: str, mode: str
+        self, parent: TreeNode, strategy_text: str, mode: str,
+        reflection: str = "",
     ) -> list[dict]:
         """Build the conversation messages for a child node.
 
@@ -1312,6 +1476,12 @@ class AdaptiveTreeSearch:
 
         # Build the user message for the child
         parts = []
+
+        # Prepend reflection if available
+        if reflection:
+            parts.append(
+                f"REFLECTION ON PREVIOUS EXPERIMENTS:\n{reflection}"
+            )
 
         # Add tree summary (global context only)
         if tree_summary:
@@ -1344,6 +1514,12 @@ class AdaptiveTreeSearch:
             )
             parts.append(f"Strategy: {strategy_text}")
             parts.append(write_instr)
+
+        # Add error analysis hint for classification/regression tasks
+        if self.reflexion:
+            hint = error_analysis_hint(self.task)
+            if hint:
+                parts.append(hint)
 
         child_msgs.append({"role": "user", "content": "\n\n".join(parts)})
         return child_msgs
@@ -1517,6 +1693,7 @@ class AdaptiveTreeSearch:
             "error": node.error,
             "actions": node.actions,
             "conversation_length": len(node.conversation_history),
+            "reflection": node.reflection or None,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -1605,10 +1782,12 @@ Examples:
     )
     strategy_group.add_argument(
         "--selection-strategy", default="signals",
-        choices=["signals", "ucb", "open-ended"],
+        choices=["signals", "ucb", "open-ended", "softmax"],
         help="'signals': original weighted-signal combination. "
              "'ucb': classic UCB1 (Q + C*sqrt(ln(N)/n)). "
-             "'open-ended': UCB + trend bonus + path commitment. (default: signals)",
+             "'open-ended': UCB + trend bonus + path commitment. "
+             "'softmax': softmax sampling with visit penalty (ALMA-inspired). "
+             "(default: signals)",
     )
     strategy_group.add_argument(
         "--ucb-c", type=float, default=1.41,
@@ -1621,6 +1800,14 @@ Examples:
     strategy_group.add_argument(
         "--commitment-threshold", type=int, default=2,
         help="Max consecutive committed expansions in open-ended strategy (default: 2)",
+    )
+    strategy_group.add_argument(
+        "--softmax-tau", type=float, default=0.5,
+        help="Temperature for softmax selection (lower = more greedy, default: 0.5)",
+    )
+    strategy_group.add_argument(
+        "--visit-alpha", type=float, default=0.5,
+        help="Weight for visit-count penalty in softmax strategy (default: 0.5)",
     )
 
     # --- Selection signal flags (for --selection-strategy signals) ---
@@ -1688,6 +1875,12 @@ Examples:
     env.add_argument("--output-dir", default="outputs/adaptive_search")
     env.add_argument("--verbose", action="store_true")
 
+    # --- Reflexion ---
+    env.add_argument("--reflexion", action="store_true", default=True,
+                     help="Enable tree-level reflection before each expansion (default: on)")
+    env.add_argument("--no-reflexion", dest="reflexion", action="store_false",
+                     help="Disable tree-level reflection")
+
     args = parser.parse_args()
 
     # --- Setup ---
@@ -1724,6 +1917,16 @@ Examples:
             commitment_threshold=args.commitment_threshold,
             task_profile=task_profile,
         )
+    elif args.selection_strategy == "softmax":
+        print(f"  UCB C={args.ucb_c}, trend_weight={args.trend_weight}, "
+              f"tau={args.softmax_tau}, visit_alpha={args.visit_alpha}")
+        selection_policy = SoftmaxSelectionPolicy(
+            c=args.ucb_c,
+            trend_weight=args.trend_weight,
+            tau=args.softmax_tau,
+            visit_alpha=args.visit_alpha,
+            task_profile=task_profile,
+        )
     else:
         # Original signal-based selection
         enabled = []
@@ -1755,6 +1958,7 @@ Examples:
         )
 
     print(f"Context mode: {args.context}")
+    print(f"Reflexion: {'enabled' if args.reflexion else 'disabled'}")
     print(f"Exploit threshold: {args.exploit_threshold:.0%}")
     print(f"Primary metric: {task_profile.primary_metric} "
           f"({'higher' if task_profile.higher_is_better else 'lower'} is better)")
@@ -1778,6 +1982,7 @@ Examples:
         selection_strategy=args.selection_strategy,
         output_dir=args.output_dir,
         verbose=args.verbose,
+        reflexion=args.reflexion,
     )
 
     try:

@@ -52,6 +52,12 @@ class TaskProfile:
     root_task_desc: str        # template with {baseline_score} and optionally {data_head}
     strategy_topic: str        # used in strategy prompts
     branch_write_instruction: str  # what to tell child nodes to write
+    use_generic_conda: bool = True  # False for RL tasks that install their own deps
+    needs_gpu: bool = False         # True for RL tasks that need GPU for training
+    step_timeout: float = 120.0    # seconds; RL tasks need 1800+ for training
+    task_type: str = "classification"  # classification, regression, rl, game_theory
+    target_column: str = ""            # e.g., "Survived", "SalePrice"
+    id_column: str = ""                # e.g., "PassengerId", "Id"
 
 
 TASK_PROFILES: dict[str, TaskProfile] = {
@@ -93,7 +99,7 @@ CRITICAL RULES:
 4. Handle NaN values BEFORE passing to sklearn (use fillna/dropna). Handle categorical variables with pd.get_dummies() or manual mapping
 5. Try different models and feature engineering to maximize accuracy
 
-AVAILABLE PACKAGES: pandas, numpy, scikit-learn. Do NOT pip install anything.
+AVAILABLE PACKAGES: pandas, numpy, scikit-learn, xgboost, lightgbm, catboost, torch, transformers, scipy. Do NOT pip install anything.
 
 WORKSPACE:
 - data/train.csv, data/test.csv - Input data
@@ -105,6 +111,9 @@ MANDATORY WORKFLOW (follow this EXACT order):
 ENDOFFILE
 2. python train_and_predict.py
 3. validate""",
+        task_type="classification",
+        target_column="Survived",
+        id_column="PassengerId",
     ),
 
     "regressionKaggleHousePrice": TaskProfile(
@@ -146,7 +155,7 @@ CRITICAL RULES:
 4. Handle NaN values BEFORE passing to sklearn (use fillna/dropna). Handle categorical variables with pd.get_dummies() or OneHotEncoder
 5. Try different models and feature engineering to maximize R2 score
 
-AVAILABLE PACKAGES: pandas, numpy, scikit-learn. Do NOT pip install anything.
+AVAILABLE PACKAGES: pandas, numpy, scikit-learn, xgboost, lightgbm, catboost, torch, transformers, scipy. Do NOT pip install anything.
 
 WORKSPACE:
 - data/train.csv, data/validation.csv, data/test.csv - Input data (target column: SalePrice)
@@ -158,6 +167,9 @@ MANDATORY WORKFLOW (follow this EXACT order):
 ENDOFFILE
 2. python train_and_predict.py
 3. validate""",
+        task_type="regression",
+        target_column="SalePrice",
+        id_column="Id",
     ),
 
     "battleOfSexes": TaskProfile(
@@ -213,6 +225,182 @@ MANDATORY WORKFLOW:
 <strategy function>
 ENDOFFILE
 2. validate""",
+        task_type="game_theory",
+    ),
+
+    "rlMountainCarContinuous": TaskProfile(
+        name="Mountain Car Continuous (RL)",
+        primary_metric="Reward Mean",
+        higher_is_better=True,
+        script_name="src/train.py",
+        submission_file=None,  # checkpoints, not CSV
+        data_head_cmd="cat src/config.yaml",
+        strategy_topic="the MountainCarContinuous RL task (improve PPO training to maximize mean reward)",
+        branch_write_instruction=(
+            "Modify the code and/or config to improve the PPO agent's performance, then run 'python src/train.py', then 'validate'.\n"
+            "You can modify any file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py.\n"
+            "IMPORTANT: You MUST read the existing code first before writing ANY modifications.\n"
+            "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using python -c or sed.\n"
+            "Output your first command (cat src/networks.py):"
+        ),
+        root_task_desc=(
+            "MountainCarContinuous-v0 — RL PPO Training.\n"
+            "Baseline Reward Mean: {baseline_score:.4f}\n\n"
+            "Environment: MountainCarContinuous-v0 (gymnax). Car must reach hilltop (pos >= 0.45).\n"
+            "Reward: -0.1*action^2 per step, +100 on goal. Episode: 999 steps.\n\n"
+            "Current config:\n{data_head}\n\n"
+            "Source files: src/train.py, src/networks.py, src/policy.py, src/helpers.py, src/config.yaml\n"
+            "You can modify any of these files.\n\n"
+            "IMPORTANT: You MUST read the existing source code BEFORE making any changes.\n"
+            "Your first 3 commands MUST be:\n"
+            "  1. cat src/networks.py\n"
+            "  2. cat src/policy.py\n"
+            "  3. cat src/train.py\n"
+            "Only AFTER reading all 3 files should you start modifying code.\n\n"
+            "Goal: Maximize mean reward. Output your first command (cat src/networks.py):"
+        ),
+        system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
+
+DO NOT rewrite entire files. Make TARGETED edits to specific lines or functions.
+
+To edit a file, use one of these approaches:
+- For config changes: cat << 'ENDOFFILE' > src/config.yaml (config is small, OK to rewrite)
+- For code changes: use python -c to make surgical edits:
+  python -c "
+  import re
+  code = open('src/networks.py').read()
+  code = code.replace('old_code', 'new_code')
+  open('src/networks.py', 'w').write(code)
+  "
+- For simple substitutions: sed -i 's/old/new/g' src/filename.py
+- NEVER rewrite entire .py files with cat << 'ENDOFFILE'. They are too long and will time out.
+
+COMMANDS:
+- python -c "..." - Make targeted code edits
+- sed -i 's/old/new/' file - Simple text substitutions
+- cat << 'ENDOFFILE' > src/config.yaml ... ENDOFFILE - Rewrite config (small file only)
+- python src/train.py - Train the PPO agent
+- validate - Evaluate checkpoints (ONLY after training completes)
+- cat, ls, head - View files
+
+CRITICAL RULES:
+1. ONE command per response
+2. NEVER rewrite entire .py files. Make targeted edits only.
+3. ALWAYS run 'python src/train.py' BEFORE 'validate'
+4. You can modify ANY file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
+5. The class name 'Model' in networks.py must NOT be changed (evaluation depends on it)
+6. You MUST read ALL existing source files BEFORE writing any modifications.
+7. rm -rf checkpoints before re-training
+
+AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability (tfp). Do NOT pip install anything.
+
+WORKSPACE:
+- src/config.yaml - Hyperparameters (train_config with nested keys)
+- src/networks.py - Actor-Critic model (class Model, get_model_ready function)
+- src/policy.py - PPO training loop, rollout manager, loss functions
+- src/train.py - Entry point (loads config, calls train_ppo)
+- src/helpers.py - Config loading, pickle save/load
+
+MANDATORY WORKFLOW (follow this EXACT order):
+1. cat src/networks.py  (READ existing code first)
+2. cat src/policy.py    (READ existing code)
+3. cat src/train.py     (READ existing code)
+4. Make TARGETED modifications (python -c or sed, NOT full file rewrites)
+5. rm -rf checkpoints
+6. python src/train.py
+7. validate""",
+        use_generic_conda=False,
+        needs_gpu=True,
+        step_timeout=2400.0,
+        task_type="rl",
+    ),
+
+    "rlMetaMaze": TaskProfile(
+        name="MetaMaze Navigation (RL)",
+        primary_metric="Reward Mean",
+        higher_is_better=True,
+        script_name="src/train.py",
+        submission_file=None,
+        data_head_cmd="cat src/config.yaml",
+        strategy_topic="the MetaMaze RL task (improve PPO training for grid navigation, maximize mean reward)",
+        branch_write_instruction=(
+            "Modify the code and/or config to improve the PPO agent's performance, then run 'python src/train.py', then 'validate'.\n"
+            "You can modify any file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py.\n"
+            "IMPORTANT: You MUST read the existing code first before writing ANY modifications.\n"
+            "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using python -c or sed.\n"
+            "Output your first command (cat src/networks.py):"
+        ),
+        root_task_desc=(
+            "MetaMaze-misc — RL PPO Training.\n"
+            "Baseline Reward Mean: {baseline_score:.4f}\n\n"
+            "Environment: MetaMaze-misc (gymnax). Agent navigates grid maze to reach goal.\n"
+            "Obs: local receptive field + last action + last reward + timestep.\n"
+            "Actions: 4 discrete (up/right/down/left). Reward: +10 on goal. Episode: 200 steps.\n\n"
+            "Current config:\n{data_head}\n\n"
+            "Source files: src/train.py, src/networks.py, src/policy.py, src/helpers.py, src/config.yaml\n"
+            "You can modify any of these files.\n\n"
+            "IMPORTANT: You MUST read the existing source code BEFORE making any changes.\n"
+            "Your first 3 commands MUST be:\n"
+            "  1. cat src/networks.py\n"
+            "  2. cat src/policy.py\n"
+            "  3. cat src/train.py\n"
+            "Only AFTER reading all 3 files should you start modifying code.\n\n"
+            "Goal: Maximize mean reward. Output your first command (cat src/networks.py):"
+        ),
+        system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
+
+DO NOT rewrite entire files. Make TARGETED edits to specific lines or functions.
+
+To edit a file, use one of these approaches:
+- For config changes: cat << 'ENDOFFILE' > src/config.yaml (config is small, OK to rewrite)
+- For code changes: use python -c to make surgical edits:
+  python -c "
+  import re
+  code = open('src/networks.py').read()
+  code = code.replace('old_code', 'new_code')
+  open('src/networks.py', 'w').write(code)
+  "
+- For simple substitutions: sed -i 's/old/new/g' src/filename.py
+- NEVER rewrite entire .py files with cat << 'ENDOFFILE'. They are too long and will time out.
+
+COMMANDS:
+- python -c "..." - Make targeted code edits
+- sed -i 's/old/new/' file - Simple text substitutions
+- cat << 'ENDOFFILE' > src/config.yaml ... ENDOFFILE - Rewrite config (small file only)
+- python src/train.py - Train the PPO agent
+- validate - Evaluate checkpoints (ONLY after training completes)
+- cat, ls, head - View files
+
+CRITICAL RULES:
+1. ONE command per response
+2. NEVER rewrite entire .py files. Make targeted edits only.
+3. ALWAYS run 'python src/train.py' BEFORE 'validate'
+4. You can modify ANY file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
+5. The class name 'Model' in networks.py must NOT be changed (evaluation depends on it)
+6. You MUST read ALL existing source files BEFORE writing any modifications.
+7. rm -rf checkpoints before re-training
+
+AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability (tfp). Do NOT pip install anything.
+
+WORKSPACE:
+- src/config.yaml - Hyperparameters (train_config with nested keys)
+- src/networks.py - Actor-Critic model (class Model, get_model_ready function)
+- src/policy.py - PPO training loop, rollout manager, loss functions
+- src/train.py - Entry point (loads config, calls train_ppo)
+- src/helpers.py - Config loading, pickle save/load
+
+MANDATORY WORKFLOW (follow this EXACT order):
+1. cat src/networks.py  (READ existing code first)
+2. cat src/policy.py    (READ existing code)
+3. cat src/train.py     (READ existing code)
+4. Make TARGETED modifications (python -c or sed, NOT full file rewrites)
+5. rm -rf checkpoints
+6. python src/train.py
+7. validate""",
+        use_generic_conda=False,
+        needs_gpu=True,
+        step_timeout=2400.0,
+        task_type="rl",
     ),
 }
 
@@ -283,6 +471,7 @@ class TreeNode:
     conversation_history: list[dict] = field(default_factory=list)
     error: str | None = None
     snapshot_path: str = ""
+    reflection: str = ""  # tree-level reflection injected before this node
 
 
 # ---------------------------------------------------------------------------
@@ -397,19 +586,44 @@ class ContainerManager:
             self.env.reset()
             self._load_commands()
 
-            # Extract baseline scores
+            # Extract baseline scores (try multiple paths)
+            scores = None
             if hasattr(self.env, 'task') and hasattr(self.env.task, 'baseline_scores'):
                 scores = self.env.task.baseline_scores
-                if scores:
-                    if isinstance(scores, dict):
-                        self.baseline_scores_dict = scores
-                    elif isinstance(scores, list) and scores:
-                        self.baseline_scores_dict = scores[0] if isinstance(scores[0], dict) else {"score": scores[0]}
-                    # Pick primary metric for baseline_score
-                    if self.task_profile and self.task_profile.primary_metric in self.baseline_scores_dict:
-                        self.baseline_score = self.baseline_scores_dict[self.task_profile.primary_metric]
-                    elif self.baseline_scores_dict:
-                        self.baseline_score = list(self.baseline_scores_dict.values())[0]
+            elif hasattr(self.env, 'task_args') and hasattr(self.env.task_args, 'baseline_scores'):
+                scores = self.env.task_args.baseline_scores
+            elif hasattr(self.env, 'task') and hasattr(self.env.task, 'args') and hasattr(self.env.task.args, 'baseline_scores'):
+                scores = self.env.task.args.baseline_scores
+            if scores:
+                if isinstance(scores, dict):
+                    self.baseline_scores_dict = scores
+                elif isinstance(scores, list) and scores:
+                    self.baseline_scores_dict = scores[0] if isinstance(scores[0], dict) else {"score": scores[0]}
+                # Pick primary metric for baseline_score
+                if self.task_profile and self.task_profile.primary_metric in self.baseline_scores_dict:
+                    self.baseline_score = self.baseline_scores_dict[self.task_profile.primary_metric]
+                elif self.baseline_scores_dict:
+                    self.baseline_score = list(self.baseline_scores_dict.values())[0]
+
+            # Activate conda env for tabular ML tasks (has sklearn, torch, etc.)
+            # RL tasks (use_generic_conda=False) install their own deps via MLGym.
+            if self.task_profile and self.task_profile.use_generic_conda:
+                print("Activating generic conda env...")
+                self.env.communicate(
+                    "export PATH=/home/agent/miniconda3/envs/mlgym_generic/bin:$PATH",
+                    timeout_duration=10,
+                )
+                self.env.communicate(
+                    "pip install -q xgboost lightgbm catboost > /dev/null 2>&1",
+                    timeout_duration=300,
+                )
+                check = self.env.communicate(
+                    "python -c 'import torch, sklearn, xgboost; "
+                    "print(f\"torch={torch.__version__}, sklearn={sklearn.__version__}, xgb={xgboost.__version__}\")' 2>&1"
+                )
+                print(f"  Package check: {check.strip()}")
+            else:
+                print("RL task — skipping generic conda (task installs own deps)")
 
             # cd into workspace
             self.env.communicate("cd /home/agent/workspace")
@@ -433,10 +647,18 @@ class ContainerManager:
                 datum = {"name": full.name, "contents": contents, "type": "source_file"}
                 env.add_commands([datum])
 
-    def step(self, action: str, timeout: float = 120.0) -> tuple[str, dict]:
+    def step(self, action: str, timeout: float | None = None) -> tuple[str, dict]:
         """Execute action, return (observation, info)."""
+        if timeout is None:
+            timeout = self.task_profile.step_timeout if self.task_profile else 120.0
         obs, reward, done, info = self.env.step(action)
-        return obs or "Action executed.", info
+        obs = obs or "Action executed."
+        # If the container restarted (timeout/crash), shell functions are lost.
+        # Reload commands and restore working directory.
+        if "RESTARTING PROCESS" in obs:
+            self._load_commands()
+            self.env.communicate("cd /home/agent/workspace")
+        return obs, info
 
     def communicate(self, cmd: str, timeout: float = 30.0) -> str:
         return self.env.communicate(cmd, timeout_duration=timeout) or ""
@@ -464,23 +686,41 @@ class ContainerManager:
 
 class LLMClient:
     def __init__(self, base_url: str, model: str, temperature: float):
-        self.client = OpenAI(base_url=base_url, api_key="local")
+        import os
+        api_key = os.environ.get("OPENAI_API_KEY", "local")
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self.client = OpenAI(**kwargs)
         self.model = model
         self.temperature = temperature
 
     def chat(self, messages: list[dict], temperature: float | None = None) -> str:
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature or self.temperature,
-            max_tokens=2048,
-        )
-        return resp.choices[0].message.content or ""
+        is_reasoning = any(t in self.model for t in ("o1", "o3", "o4"))
+        token_key = "max_completion_tokens" if is_reasoning or "gpt-5" in self.model else "max_tokens"
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            token_key: 16384 if is_reasoning else 4096,
+        }
+        if not is_reasoning:
+            kwargs["temperature"] = temperature or self.temperature
+        for attempt in range(3):
+            try:
+                resp = self.client.chat.completions.create(**kwargs)
+                return resp.choices[0].message.content or ""
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2 ** (attempt + 1))
+                else:
+                    raise RuntimeError(f"LLM failed after 3 attempts: {e}")
 
     def generate_strategies(self, current_score: float, baseline_score: float,
                             previous_approach: str, n: int,
                             sampling_mode: str = "tail",
-                            task_topic: str = "this task") -> list[tuple[str, float]]:
+                            task_topic: str = "this task",
+                            sibling_info: list[str] | None = None,
+                            ) -> list[tuple[str, float]]:
         prompt_templates = {
             "tail": STRATEGY_PROMPT_TAIL,
             "uniform": STRATEGY_PROMPT_UNIFORM,
@@ -494,6 +734,12 @@ class LLMClient:
             n_strategies=n,
             task_topic=task_topic,
         )
+        if sibling_info:
+            prompt += (
+                "\n\nStrategies already tried from this same parent "
+                "(DO NOT repeat or closely resemble any of these):\n"
+                + "\n".join(sibling_info)
+            )
         resp = self.chat([{"role": "user", "content": prompt}], temperature=1.0)
         return self._parse_strategies(resp)
 

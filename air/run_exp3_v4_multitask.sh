@@ -8,6 +8,8 @@
 
 set -e
 
+cd /home/ubuntu/MLScientist/MLGym
+
 SCRIPT="/home/ubuntu/MLScientist/air-agent/air/adaptive_tree_search.py"
 BASE_OUT="outputs/adaptive_search_v3"
 
@@ -77,8 +79,8 @@ run_all_configs() {
 }
 
 # --- Run on both remaining tasks ---
-run_all_configs "houseprice" "configs/tasks/regressionKaggleHousePrice.yaml"
-run_all_configs "battleofsexes" "configs/tasks/battleOfSexes.yaml"
+run_all_configs "houseprice" "tasks/regressionKaggleHousePrice.yaml"
+run_all_configs "battleofsexes" "tasks/battleOfSexes.yaml"
 
 echo ""
 echo "============================================================"
