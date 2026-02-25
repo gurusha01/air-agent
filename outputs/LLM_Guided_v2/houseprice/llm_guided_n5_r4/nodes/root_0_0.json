@@ -1,0 +1,26 @@
+{
+  "node_id": "root_0_0",
+  "parent_id": "root_0",
+  "depth": 2,
+  "strategy": "Use CatBoost with the following settings: iterations=700, learning_rate=0.02, depth=8. For preprocessing, fill numeric NaN with median, drop columns with >50% missing, and pass cat_features parameter to CatBoost. Ensure all categorical columns are cast to string before fitting the model.",
+  "score": 0.9010506141606385,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > train_and_predict.py\nimport pandas as pd\nimport numpy as np\nfrom catboost import CatBoostRegressor\n\n# Load data\ntrain = pd.read_csv('data/train.csv')\nvalidation = pd.read_csv('data/validation.csv')\ntest = pd.read_csv('data/test.csv')\n\n# Separate features and target\nX_train = train.drop(['Id', 'SalePrice'], axis=1)\ny_train = train['SalePrice']\nX_val = validation.drop(['Id', 'SalePrice'], axis=1)\ny_val = validation['SalePrice']\nX_test = test.drop(['Id'], axis=1)\n\n# Identify categorical columns\ncategorical_columns = X_train.select_dtypes(include=['object']).columns.tolist()\nnumeric_columns = X_train.select_dtypes(include=[np.number]).columns.tolist()\n\n# Fill NaN in numeric columns with median\nfor col in numeric_columns:\n    if X_train[col].isna().sum() > 0:\n        X_train[col] = X_train[col].fillna(X_train[col].median())\n        X_val[col] = X_val[col].fillna(X_val[col].median())\n        X_test[col] = X_test[col].fillna(X_test[col].median())\n\n# Fill NaN in categorical columns with mode\nfor col in categorical_columns:\n    mode_val = X_train[col].mode()[0] if not X_train[col].mode().empty else 'Unknown'\n    X_train[col] = X_train[col].fillna(mode_val)\n    X_val[col] = X_val[col].fillna(mode_val)\n    X_test[col] = X_test[col].fillna(mode_val)\n\n# Convert categorical columns to string\nfor col in categorical_columns:\n    X_train[col] = X_train[col].astype(str)\n    X_val[col] = X_val[col].astype(str)\n    X_test[col] = X_test[col].astype(str)\n\n# Drop columns with more than 50% missing values\nmissing_ratio_train = X_train.isnull().mean()\nmissing_ratio_test = X_test.isnull().mean()\ncols_to_drop = missing_ratio_train[missing_ratio_train > 0.5].index.tolist()\nX_train = X_train.drop(cols_to_drop, axis=1)\nX_val = X_val.drop(cols_to_drop, axis=1)\nX_test = X_test.drop(cols_to_drop, axis=1)\n\n# Define cat_features for CatBoost\ncat_features = [col for col in X_train.columns if X_train[col].dtype == 'object']\n\n# Initialize and train CatBoost model with improved hyper",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "python train_and_predict.py",
+      "observation": "Action executed.",
+      "step": 1
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/submission.csv.\nBaseline Score: {'rmse': 30340.111853413255, 'r2': 0.8799891474739243}\nEvaluation Score: {'rmse': 27549.4839768139, 'r2': 0.9010506141606385}",
+      "step": 2
+    }
+  ],
+  "conversation_length": 18
+}

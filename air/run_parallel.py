@@ -48,6 +48,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 SCRIPT = Path(__file__).parent / "adaptive_tree_search.py"
 AIRA_SCRIPT = Path(__file__).parent / "aira_dojo" / "search.py"
 LINEAR_SCRIPT = Path(__file__).parent / "linear_search.py"
+LLM_GUIDED_SCRIPT = Path(__file__).parent / "llm_guided_tree_search.py"
 BASE_OUT = Path("outputs/adaptive_search_v3")
 
 
@@ -74,6 +75,8 @@ class ExperimentConfig:
     temperature: float = 0.0  # 0 = don't pass (use script default)
     reflexion: bool = False    # --reflexion / --no-reflexion
     base_output: str = ""      # override BASE_OUT (empty = use default)
+    is_llm_guided: bool = False   # True for LLM-guided tree search (Exp 4)
+    scientist_model: str = ""     # e.g. "gpt-4o" (only for is_llm_guided=True)
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +566,38 @@ def _build_suites():
                 ))
     SUITES["feb22-oe"] = feb22_oe_cfgs
 
+    # --- LLM-Guided Tree Search (Experiment 4) ---
+    LLM_GUIDED_OUT = str(Path(__file__).parent.parent / "outputs" / "LLM_Guided_v2")
+    LLM_GUIDED_TASKS = [
+        ("tasks/titanic.yaml",                   "titanic",     False, 15),
+        ("tasks/regressionKaggleHousePrice.yaml", "houseprice",  False, 15),
+        ("tasks/battleOfSexes.yaml",              "bos",         False, 15),
+        ("tasks/rlMountainCarContinuous.yaml",    "mountaincar", True,  20),
+    ]
+    LLM_GUIDED_BUDGETS = [5, 15]
+    LLM_GUIDED_RUNS = 5
+    llm_guided_cfgs: list[ExperimentConfig] = []
+    common_llm_guided = dict(
+        model="Qwen/Qwen3-4B-Instruct-2507",
+        vllm_url="http://localhost:8000/v1",
+        temperature=0.9,
+        base_output=LLM_GUIDED_OUT,
+    )
+    for task_config, task_label, needs_gpu, max_actions in LLM_GUIDED_TASKS:
+        for budget in LLM_GUIDED_BUDGETS:
+            for run in range(1, LLM_GUIDED_RUNS + 1):
+                llm_guided_cfgs.append(ExperimentConfig(
+                    name=f"llm_guided_n{budget}_r{run}",
+                    task_config=task_config, task_label=task_label,
+                    selection_strategy="llm_guided", context="global",
+                    needs_gpu=needs_gpu,
+                    node_budget=budget, initial_breadth=3, max_actions=max_actions,
+                    is_llm_guided=True,
+                    scientist_model="gpt-4o",
+                    **common_llm_guided,
+                ))
+    SUITES["llm-guided"] = llm_guided_cfgs
+
 
 # ---------------------------------------------------------------------------
 # GPU Pool
@@ -630,7 +665,20 @@ def run_one_experiment(cfg: ExperimentConfig, gpu_pool: GPUPool,
     gpu = gpu_pool.acquire(needs_dedicated=cfg.needs_gpu)
     _log(f"START {cfg.task_label}/{cfg.name} on GPU {gpu}")
 
-    if cfg.is_linear:
+    if cfg.is_llm_guided:
+        cmd = [
+            sys.executable, str(LLM_GUIDED_SCRIPT),
+            "--task-config", cfg.task_config,
+            "--output-dir", str(out_dir),
+            "--node-budget", str(cfg.node_budget),
+            "--initial-breadth", str(cfg.initial_breadth),
+            "--max-actions", str(cfg.max_actions),
+            "--env-gpu", str(gpu),
+        ]
+        if cfg.scientist_model:
+            cmd.extend(["--scientist-model", cfg.scientist_model])
+        cmd.extend(cfg.extra_args)
+    elif cfg.is_linear:
         cmd = [
             sys.executable, str(LINEAR_SCRIPT),
             "--task-config", cfg.task_config,
@@ -670,7 +718,7 @@ def run_one_experiment(cfg: ExperimentConfig, gpu_pool: GPUPool,
         cmd.extend(["--temperature", str(cfg.temperature)])
 
     # Reflexion flag (both adaptive_tree_search and aira support it)
-    if not cfg.is_linear:
+    if not cfg.is_linear and not cfg.is_llm_guided:
         if cfg.reflexion:
             cmd.append("--reflexion")
         else:

@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "Use a reinforcement-learning-inspired strategy where the row player updates their action probability based on historical outcomes. Adjust the learning rate to 0.1 and introduce a decay factor of 0.99 to gradually reduce the influence of older outcomes. Implement this with a simple Python script that updates probabilities after each round based on the outcome. Ensure the script is concise and under 100 lines.\n\n(VS suggestion: Introduce a dynamic exploration rate decay that adjusts based on the consistency of payoff outcomes rather than a fixed time-based decay. Instead of decaying the exploration rate linearly with interaction count, the decay is accelerated when consecutive actions result in similar payoffs (i.e., low variance in observed rewards), indicating the strategy is stabilizing in a high-reward regime. This allows the model to reduce exploration more aggressively when it's confident in its current action selection, while preserving exploration during periods of reward instability or uncertainty.)",
+  "score": 1.3892700672149658,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if not history:\n        return 0\n    \n    # Initialize payoff tracking\n    payoff_0 = 0\n    payoff_1 = 0\n    total_rounds = len(history)\n    \n    for my_move, their_move in history:\n        if my_move == 0 and their_move == 0:\n            payoff_0 += 2\n        elif my_move == 1 and their_move == 1:\n            payoff_1 += 2\n        # Otherwise, both differ \u2192 payoff 0 (no contribution)\n    \n    # Avoid division by zero\n    if total_rounds == 0:\n        return 0\n    \n    # Calculate average payoffs\n    avg_payoff_0 = payoff_0 / total_rounds\n    avg_payoff_1 = payoff_1 / total_rounds\n    \n    # Use learning rate and decay factor\n    learning_rate = 0.1\n    decay_factor = 0.99\n    \n    # If payoffs are equal, explore with adaptive epsilon\n    if abs(avg_payoff_0 - avg_payoff_1) < 1e-6:\n        # Explore: decay exploration based on payoff consistency\n        # Compute variance of payoffs to assess stability\n        variance = 0\n        for my_move, their_move in history:\n            if my_move == 0 and their_move == 0:\n                variance += (2 - avg_payoff_0) ** 2\n            elif my_move == 1 and their_move == 1:\n                variance += (2 - avg_payoff_1) ** 2\n        variance = variance / total_rounds if total_rounds > 0 else 0\n        \n        # High variance \u2192 keep exploration; low variance \u2192 reduce exploration\n        epsilon = max(0.01, 0.1 * (1.0 / (1.0 + variance * 10)))\n        return 1 if random.random() < epsilon else 0\n    else:\n        # Choose action with higher average payoff\n        if avg_payoff_0 > avg_payoff_1:\n            return 0\n        else:\n            return 1\nENDOFFILE",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.3892700672149658}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}

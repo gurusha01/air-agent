@@ -1,0 +1,21 @@
+{
+  "node_id": "root_2_0",
+  "parent_id": "root_2",
+  "depth": 2,
+  "strategy": "Refine the symmetric correlated equilibrium strategy by introducing a dynamic adjustment mechanism. Use a simple heuristic to adjust the correlation based on past outcomes. For example, if the last few rounds resulted in a loss, slightly increase the probability of choosing the alternative action. Implement this adjustment in a loop over multiple iterations to simulate the game. Ensure the code remains under 100 lines.\n\n(VS suggestion: Introduce a dynamic sliding window size that adapts based on the volatility of opponent behavior. Instead of a fixed 5-round window, calculate the moving standard deviation of the opponent's action frequencies over the last 10 rounds. If the standard deviation exceeds a threshold (e.g., 0.3), expand the window to 10 rounds to capture longer-term patterns; otherwise, maintain a 5-round window. This improves correlation accuracy during periods of behavioral instability while reducing noise during stable play. The correlation matrix is updated every time the window size changes, ensuring the row player responds to shifts in opponent patterns without sacrificing responsiveness.)",
+  "score": 1.3253400325775146,
+  "error": null,
+  "actions": [
+    {
+      "action": "cat << 'ENDOFFILE' > strategy.py\nimport random\n\ndef row_strategy(history):\n    if len(history) < 5:\n        return 0\n    \n    # Use last 10 rounds for volatility analysis\n    window = history[-10:] if len(history) >= 10 else history\n    \n    # Count opponent's actions\n    their_0_count = sum(1 for _, their_move in window if their_move == 0)\n    their_1_count = sum(1 for _, their_move in window if their_move == 1)\n    \n    # Compute frequency\n    total = len(window)\n    freq_0 = their_0_count / total\n    freq_1 = their_1_count / total\n    \n    # Compute volatility (standard deviation of frequencies)\n    # Simple variance-based volatility\n    variance = (freq_0 - 0.5)**2 + (freq_1 - 0.5)**2\n    volatility = variance ** 0.5\n    \n    # Adjust window size based on volatility\n    if volatility > 0.3:\n        # Expand to 10 rounds if volatile\n        window = history[-10:]\n        their_0_count = sum(1 for _, their_move in window if their_move == 0)\n        their_1_count = sum(1 for _, their_move in window if their_move == 1)\n        freq_0 = their_0_count / 10\n        freq_1 = their_1_count / 10\n    else:\n        # Use 5-round window for stable behavior\n        window = history[-5:]\n        their_0_count = sum(1 for _, their_move in window if their_move == 0)\n        their_1_count = sum(1 for _, their_move in window if their_move == 1)\n        freq_0 = their_0_count / 5\n        freq_1 = their_1_count / 5\n    \n    # Dynamic adjustment: if recent rounds were losses (different actions), shift toward opponent's action\n    # Check if last 3 rounds were mismatches (0 vs 1)\n    recent_mismatches = sum(1 for i in range(max(0, len(history) - 3), len(history)) \n                           if history[i][0] != history[i][1])\n    \n    if recent_mismatches >= 2:\n        # If losses, slightly increase chance of choosing opposite\n        if freq_0 > freq_1:\n            return 1\n        else:\n            return 0\n    \n    # Default: align with opponent's dominant action\n    if freq_0 > fre",
+      "observation": "Action executed.",
+      "step": 0
+    },
+    {
+      "action": "validate",
+      "observation": "Your code produced a valid submission artefact at /home/agent/workspace/target.py.\nBaseline Score: {'Score': 1.0226699113845825}\nEvaluation Score: {'Score': 1.3253400325775146}",
+      "step": 1
+    }
+  ],
+  "conversation_length": 12
+}
