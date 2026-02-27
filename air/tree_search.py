@@ -240,7 +240,7 @@ ENDOFFILE
             "Modify the code and/or config to improve the PPO agent's performance, then run 'python src/train.py', then 'validate'.\n"
             "You can modify any file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py.\n"
             "IMPORTANT: You MUST read the existing code first before writing ANY modifications.\n"
-            "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using python -c or sed.\n"
+            "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using sed -i.\n"
             "Output your first command (cat src/networks.py):"
         ),
         root_task_desc=(
@@ -261,36 +261,25 @@ ENDOFFILE
         ),
         system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
 
-DO NOT rewrite entire files. Make TARGETED edits to specific lines or functions.
-
-To edit a file, use one of these approaches:
-- For config changes: cat << 'ENDOFFILE' > src/config.yaml (config is small, OK to rewrite)
-- For code changes: use python -c to make surgical edits:
-  python -c "
-  import re
-  code = open('src/networks.py').read()
-  code = code.replace('old_code', 'new_code')
-  open('src/networks.py', 'w').write(code)
-  "
+To edit files, use one of these approaches:
 - For simple substitutions: sed -i 's/old/new/g' src/filename.py
-- NEVER rewrite entire .py files with cat << 'ENDOFFILE'. They are too long and will time out.
+- To rewrite a file: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+  (Read the file first, then rewrite it with your modifications)
 
 COMMANDS:
-- python -c "..." - Make targeted code edits
-- sed -i 's/old/new/' file - Simple text substitutions
-- cat << 'ENDOFFILE' > src/config.yaml ... ENDOFFILE - Rewrite config (small file only)
+- sed -i 's/old/new/g' file - Text substitutions
+- cat << 'ENDOFFILE' > file ... ENDOFFILE - Rewrite a file with modifications
 - python src/train.py - Train the PPO agent
 - validate - Evaluate checkpoints (ONLY after training completes)
 - cat, ls, head - View files
 
 CRITICAL RULES:
 1. ONE command per response
-2. NEVER rewrite entire .py files. Make targeted edits only.
-3. ALWAYS run 'python src/train.py' BEFORE 'validate'
-4. You can modify ANY file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
-5. The class name 'Model' in networks.py must NOT be changed (evaluation depends on it)
-6. You MUST read ALL existing source files BEFORE writing any modifications.
-7. rm -rf checkpoints before re-training
+2. ALWAYS run 'python src/train.py' BEFORE 'validate'
+3. You can modify ANY file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
+4. The class name 'Model' in networks.py must NOT be changed (evaluation depends on it)
+5. You MUST read existing source files BEFORE writing any modifications.
+6. rm -rf checkpoints before re-training
 
 AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability (tfp). Do NOT pip install anything.
 
@@ -305,7 +294,7 @@ MANDATORY WORKFLOW (follow this EXACT order):
 1. cat src/networks.py  (READ existing code first)
 2. cat src/policy.py    (READ existing code)
 3. cat src/train.py     (READ existing code)
-4. Make TARGETED modifications (python -c or sed, NOT full file rewrites)
+4. Make modifications (sed -i or cat << 'ENDOFFILE')
 5. rm -rf checkpoints
 6. python src/train.py
 7. validate""",
@@ -327,7 +316,7 @@ MANDATORY WORKFLOW (follow this EXACT order):
             "Modify the code and/or config to improve the PPO agent's performance, then run 'python src/train.py', then 'validate'.\n"
             "You can modify any file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py.\n"
             "IMPORTANT: You MUST read the existing code first before writing ANY modifications.\n"
-            "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using python -c or sed.\n"
+            "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using sed -i.\n"
             "Output your first command (cat src/networks.py):"
         ),
         root_task_desc=(
@@ -349,36 +338,25 @@ MANDATORY WORKFLOW (follow this EXACT order):
         ),
         system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
 
-DO NOT rewrite entire files. Make TARGETED edits to specific lines or functions.
-
-To edit a file, use one of these approaches:
-- For config changes: cat << 'ENDOFFILE' > src/config.yaml (config is small, OK to rewrite)
-- For code changes: use python -c to make surgical edits:
-  python -c "
-  import re
-  code = open('src/networks.py').read()
-  code = code.replace('old_code', 'new_code')
-  open('src/networks.py', 'w').write(code)
-  "
+To edit files, use one of these approaches:
 - For simple substitutions: sed -i 's/old/new/g' src/filename.py
-- NEVER rewrite entire .py files with cat << 'ENDOFFILE'. They are too long and will time out.
+- To rewrite a file: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+  (Read the file first, then rewrite it with your modifications)
 
 COMMANDS:
-- python -c "..." - Make targeted code edits
-- sed -i 's/old/new/' file - Simple text substitutions
-- cat << 'ENDOFFILE' > src/config.yaml ... ENDOFFILE - Rewrite config (small file only)
+- sed -i 's/old/new/g' file - Text substitutions
+- cat << 'ENDOFFILE' > file ... ENDOFFILE - Rewrite a file with modifications
 - python src/train.py - Train the PPO agent
 - validate - Evaluate checkpoints (ONLY after training completes)
 - cat, ls, head - View files
 
 CRITICAL RULES:
 1. ONE command per response
-2. NEVER rewrite entire .py files. Make targeted edits only.
-3. ALWAYS run 'python src/train.py' BEFORE 'validate'
-4. You can modify ANY file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
-5. The class name 'Model' in networks.py must NOT be changed (evaluation depends on it)
-6. You MUST read ALL existing source files BEFORE writing any modifications.
-7. rm -rf checkpoints before re-training
+2. ALWAYS run 'python src/train.py' BEFORE 'validate'
+3. You can modify ANY file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
+4. The class name 'Model' in networks.py must NOT be changed (evaluation depends on it)
+5. You MUST read existing source files BEFORE writing any modifications.
+6. rm -rf checkpoints before re-training
 
 AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability (tfp). Do NOT pip install anything.
 
@@ -393,7 +371,7 @@ MANDATORY WORKFLOW (follow this EXACT order):
 1. cat src/networks.py  (READ existing code first)
 2. cat src/policy.py    (READ existing code)
 3. cat src/train.py     (READ existing code)
-4. Make TARGETED modifications (python -c or sed, NOT full file rewrites)
+4. Make modifications (sed -i or cat << 'ENDOFFILE')
 5. rm -rf checkpoints
 6. python src/train.py
 7. validate""",
@@ -685,26 +663,47 @@ class ContainerManager:
 # ---------------------------------------------------------------------------
 
 class LLMClient:
-    def __init__(self, base_url: str, model: str, temperature: float):
+    def __init__(self, base_url: str, model: str, temperature: float,
+                 thinking_budget: int = 0):
         import os
-        api_key = os.environ.get("OPENAI_API_KEY", "local")
+        # Detect Claude models → use ANTHROPIC_API_KEY and Anthropic's
+        # OpenAI-compatible endpoint
+        if "claude" in model.lower():
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            base_url = base_url or "https://api.anthropic.com/v1/"
+        else:
+            api_key = os.environ.get("OPENAI_API_KEY", "local")
         kwargs = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         self.client = OpenAI(**kwargs)
         self.model = model
         self.temperature = temperature
+        self.thinking_budget = thinking_budget
 
     def chat(self, messages: list[dict], temperature: float | None = None) -> str:
         is_reasoning = any(t in self.model for t in ("o1", "o3", "o4"))
         token_key = "max_completion_tokens" if is_reasoning or "gpt-5" in self.model else "max_tokens"
+        max_tokens = 16384 if is_reasoning else 4096
+        # When thinking is enabled, budget is in addition to output tokens
+        if self.thinking_budget > 0:
+            max_tokens = max(max_tokens, self.thinking_budget + 4096)
         kwargs = {
             "model": self.model,
             "messages": messages,
-            token_key: 16384 if is_reasoning else 4096,
+            token_key: max_tokens,
         }
         if not is_reasoning:
             kwargs["temperature"] = temperature or self.temperature
+
+        # Add thinking budget for Claude via extra_body
+        if self.thinking_budget > 0:
+            kwargs["extra_body"] = {
+                "thinking": {"type": "enabled", "budget_tokens": self.thinking_budget}
+            }
+            # Anthropic requires temperature=1 (or unset) when thinking is enabled
+            kwargs.pop("temperature", None)
+
         for attempt in range(3):
             try:
                 resp = self.client.chat.completions.create(**kwargs)

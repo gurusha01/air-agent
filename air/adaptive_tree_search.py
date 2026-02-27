@@ -1880,6 +1880,8 @@ Examples:
                      help="Enable tree-level reflection before each expansion (default: on)")
     env.add_argument("--no-reflexion", dest="reflexion", action="store_false",
                      help="Disable tree-level reflection")
+    env.add_argument("--thinking-budget", type=int, default=0,
+                     help="Thinking budget tokens for Claude models (0 = disabled)")
 
     args = parser.parse_args()
 
@@ -1896,7 +1898,8 @@ Examples:
     print(f"Temperature: {args.temperature}")
     print(f"Selection strategy: {args.selection_strategy}")
 
-    llm = LLMClient(args.vllm_url, args.model, args.temperature)
+    llm = LLMClient(args.vllm_url, args.model, args.temperature,
+                    thinking_budget=args.thinking_budget)
     container = ContainerManager(
         args.task_config, args.env_gpu, args.image_name, task_profile=task_profile
     )

@@ -137,7 +137,7 @@ Massive improvement! v2.1 is now the best method on BOS at n15. Scaling works: n
 - r1: 1.4394, r2: 1.4406, r3: 1.4438, r4: 1.3163, r5: 1.4424
 - 4 out of 5 runs score ~1.44 (near optimal), 1 run at 1.32
 
-### v2.2: Workspace File Injection (Current)
+### v2.2: Workspace File Injection
 
 **Problem diagnosed on mountaincar:** The scientist wasted entire nodes telling the executor to "read src/networks.py" or "cat src/config.yaml" before making changes. On a 5-node budget, spending 2-3 nodes just reading files is fatal.
 
@@ -155,7 +155,109 @@ Massive improvement! v2.1 is now the best method on BOS at n15. Scaling works: n
 
 3. **Remove file-reading instructions:** Changed diversity check guidance from "Read the task details carefully" to "The executor already has all source files in context — don't ask it to read code."
 
-**Expected impact:** No more wasted nodes on exploration. Every node from step 1 should be an actionable change (modify hyperparameters, write code, etc.).
+### v3/v4: Executor Prompt Fixes for RL Tasks
+
+**Problem diagnosed:** The executor's `python -c` one-liner commands failed silently on RL tasks, leaving files unchanged. The executor would "modify" a file, train, validate — and get the baseline score because the file was never actually changed. Score of 49.72 was the retrained baseline, not an improvement.
+
+**Root cause:** `python -c` with complex string quoting breaks in bash. The executor was using commands like `python -c "import yaml; ..."` that silently errored.
+
+**Changes (v3):**
+- Removed ALL `python -c` references from RL executor system prompts
+- Allowed `cat << 'ENDOFFILE' > file` for rewriting ANY file (not just config)
+- Executor now uses `sed -i` for simple substitutions and `cat << 'ENDOFFILE'` for full rewrites
+- Added mandatory workflow: read existing files before modifying, `rm -rf checkpoints` before retraining
+
+**Results (v3, mountaincar n5, old scientist prompt):**
+- All 5 nodes completed without silent failures
+- Best: 46.19 (critic_coeff change) — but all changes were config-only hyperparameter tweaks
+- No ambitious code changes because executor was still constrained
+
+**Changes (v4):**
+- Removed "NEVER rewrite .py files" restriction
+- Executor can now modify any file via `cat << 'ENDOFFILE'`
+- Simplified prompt significantly
+
+### v5: Scientist Prompt Redesign (Current)
+
+**Problem diagnosed:** LLM-guided underperformed Adaptive MCTS (mean 50.65 vs 65.39 on mountaincar n5). Root cause analysis:
+
+1. **Strategy diversity**: Scientist (Qwen 4B) kept proposing the same idea (OU noise) for all 5 nodes. No diversity.
+2. **Strategy executability**: Scientist gave code-level instructions ("modify select_action_ppo to add OU noise") that executor couldn't implement via sed. When executor tried to follow specific code instructions, it failed.
+3. **Key insight**: In Adaptive MCTS, executor *ignores* the strategy and independently does simple config changes that work. In LLM-guided, executor *tries* to follow the scientist's specific instructions and fails.
+
+**Scientist prompt rewrite:**
+- Changed from prescriptive "WHAT to try, then WHERE" to natural "look at tree, decide to deepen or explore"
+- Added **verbalized sampling**: "Imagine a probability distribution over ALL strategies. Sample 3 such that each has probability < 0.2" — forces diversity beyond obvious ideas
+- Changed role to **mentor/coach**: "Give it a direction — you decide the right level of specificity. Focus on the IDEA, not the code."
+- Natural explore/deepen decision: "DEEPEN if promising branch has potential, EXPLORE if you want something fundamentally different"
+- Budget awareness: "With >=5 nodes left, prefer exploring. With <=2, prefer refining."
+
+**Results (v5, mountaincar n5, single test run):**
+- Best: **68.90** — matching best Adaptive MCTS result
+- Tree: root_0 (22.27, hyperparams), root_1 (68.90, reward shaping), root_1_0 (68.90), root_1_1 (FAIL, syntax), root_2 (FAIL, syntax)
+- Scientist proposed reward shaping on step 2 (not just hyperparameter tuning), showing real diversity
+- 2/5 nodes failed due to syntax errors in code modifications — executability still a challenge
+
+---
+
+## Strong Baselines Comparison (Experiment 4.strong_baselines)
+
+### Mountaincar n5 Results (Qwen3-4B, 5 runs each)
+
+| Method | Mean Best | Min | Max | Std |
+|--------|----------|-----|-----|-----|
+| **Adaptive MCTS** | **65.39** | 51.39 | 68.90 | 7.84 |
+| AIRA Vanilla MCTS | 56.82 | 44.54 | 68.90 | 11.12 |
+| LLM-Guided (old prompt) | 50.65 | 49.72 | 54.36 | 2.07 |
+| LLM-Guided v5 (new prompt) | 68.90* | — | — | — |
+
+*Baseline: 33.79. (*) = single test run*
+
+### Multitask Results (LLM-Guided Qwen Both, old scientist prompt)
+
+**Titanic (classification, accuracy)**
+
+| Budget | r1 | r2 | r3 | r4 | r5 | Mean |
+|--------|-----|-----|-----|-----|-----|------|
+| n5 | 0.830 | 0.902 | 0.787 | 0.787 | 0.873 | 0.836 |
+| n15 | 0.885 | 0.835 | **0.983** | 0.852 | 0.897 | 0.890 |
+
+*Baseline: 0.766. Scaling works: n5→n15 mean improves 0.836→0.890.*
+
+**House Price (regression, R²)**
+
+| Budget | r1 | r2 | r3 | r4 | r5 | Mean |
+|--------|-----|-----|-----|-----|-----|------|
+| n5 | 0.905 | 0.909 | 0.906 | 0.909 | 0.909 | 0.908 |
+| n15 | 0.912 | 0.908 | 0.914 | **0.915** | 0.907 | 0.911 |
+
+*Baseline: 0.880. Very stable across runs. Modest but consistent improvement.*
+
+**Battle of Sexes (game theory, payoff)**
+
+| Budget | r1 | r2 | r3 | r4 | r5 | Mean |
+|--------|-----|-----|-----|-----|-----|------|
+| n5 | 1.023 | **1.441** | 1.190 | 1.312 | 1.023 | 1.198 |
+| n15 | **1.444** | 1.443 | 1.186 | 1.407 | 1.379 | 1.372 |
+
+*Baseline: ~1.00. Strong scaling: n5→n15 mean improves 1.198→1.372.*
+
+**Mountaincar (RL, reward mean)**
+
+| Budget | r1 | r2 | r3 | r4 | r5 | Mean |
+|--------|-----|-----|-----|-----|-----|------|
+| n5 | 49.72 | 54.36 | 49.72 | 49.72 | 49.72 | 50.65 |
+| n15 (partial) | — | — | 49.72 | 48.72 | 56.20 | 51.55 |
+
+*Baseline: 33.79. Modest improvement. v5 prompt expected to significantly improve these.*
+
+### Observations
+
+1. **LLM-Guided scales well** on tabular/game tasks: BOS n5→n15 improved from 1.20→1.37
+2. **RL tasks are harder**: mountaincar scores plateau around 49-54 with old prompt, but v5 prompt broke through to 68.90
+3. **Executor is the bottleneck on RL**: 2/5 mountaincar nodes FAIL due to syntax errors in code modifications
+4. **Adaptive MCTS wins on mountaincar** because executor ignores strategy and does simple config changes that work
+5. **AIRA Vanilla is more variable** than Adaptive MCTS (range 44.54-68.90 vs 51.39-68.90)
 
 ---
 
@@ -163,25 +265,28 @@ Massive improvement! v2.1 is now the best method on BOS at n15. Scaling works: n
 
 | File | Description |
 |------|-------------|
-| `air/llm_guided_tree_search.py` | Main implementation (~600 lines) |
-| `air/run_parallel.py` | Modified: `is_llm_guided` field, llm-guided suite, command builder |
-| `air/plot_feb22.py` | Modified: includes LLM-Guided v1 and v2 in comparison plot |
+| `air/llm_guided_tree_search.py` | Main implementation (~1100 lines) |
+| `air/tree_search.py` | Shared: ContainerManager, LLMClient, TaskProfile |
+| `air/adaptive_tree_search.py` | Adaptive MCTS (our custom method) |
+| `air/aira_dojo/search.py` | AIRA Vanilla implementation |
+| `air/run_parallel.py` | Parallel runner with strong baseline suites |
 | `experiment_logs/experiments4.md` | This file |
+| `experiment_logs/llm_guided_vs_adaptive.md` | Method comparison document |
 
 ## Output Directories
 
 | Directory | Description |
 |-----------|-------------|
 | `outputs/LLM_Guided/` | v1 results (preserved, all tasks) |
-| `outputs/LLM_Guided_v2/` | v2+ results (BOS re-run after task-awareness fix, mountaincar re-run after file injection) |
+| `outputs/LLM_Guided_v2/` | v2+ results (BOS, mountaincar) |
 | `outputs/Feb22_Baselines/` | Baseline results (softmax, aira_mcts, oe) — 115/120 complete |
+| `outputs/Strong_Baselines/llm_guided_qwen_both/` | LLM-Guided with Qwen scientist+executor, all 4 tasks |
+| `outputs/Strong_Baselines/adaptive_mcts_qwen/` | Adaptive MCTS with Qwen, mountaincar |
+| `outputs/Strong_Baselines/aira_vanilla/` | AIRA Vanilla MCTS with Qwen, mountaincar |
 
-## Comparison Plan
+## Next Steps
 
-Run the same setup as Feb22 baselines:
-- 4 tasks × [5, 15] budget × 5 runs
-- Compare against: softmax + reflexion, AIRA MCTS, open-ended
-- Metrics: best score, score variance across runs, tree diversity
-
-Currently completed: BOS (v2.1), mountaincar (v2.2 running).
-Titanic and houseprice have partial v2 results from before bug fixes — may need re-run.
+1. Run v5 scientist prompt across all 5 mountaincar seeds (in progress)
+2. Run v5 prompt on other tasks (titanic, houseprice, bos)
+3. Strong model comparisons: Claude Opus as scientist and/or executor
+4. Address executor syntax errors on RL code modifications

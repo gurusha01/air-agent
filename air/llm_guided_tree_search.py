@@ -69,7 +69,7 @@ class ScientistDecision:
 # Scientist Prompt
 # ---------------------------------------------------------------------------
 
-SCIENTIST_PROMPT = """You are a senior research scientist mentoring a junior coder.
+SCIENTIST_PROMPT_TURN1 = """You are a senior research scientist mentoring a junior coder.
 Your job is to guide them to solve this task:
 
 {task_description}
@@ -113,36 +113,6 @@ WHAT IT CANNOT DO (never ask for these):
 - Multi-file code, imports from custom modules
 - Debugging subtle errors (it rewrites the same broken code 5+ times)
 
-CRITICAL PATTERN TO AVOID:
-When a node FAILS, the executor likely wrote code that crashed, then spent all
-remaining actions rewriting the same broken approach. Do NOT retry the same
-approach unless you can identify the SPECIFIC bug and tell the executor exactly
-how to avoid it. Otherwise, it will fail the same way again.
-
-## Your Role as Mentor
-
-You are not just picking nodes — you are COACHING the executor. For each direction:
-
-1. TELL IT WHAT TO DO: Specific model, specific hyperparameters, specific preprocessing
-2. TELL IT WHAT TO AVOID: Based on errors you see in the tree, warn about pitfalls
-3. KEEP IT SIMPLE: One model, one script, under 100 lines. The executor succeeds when
-   the task is simple and concrete.
-4. GIVE ESCAPE HATCHES: Tell it "if you get an error with X, try Y instead" so it
-   doesn't waste actions on a dead end.
-
-Example GOOD directions:
-- ML task: "Use CatBoost with iterations=500, learning_rate=0.03, depth=6.
-  Fill numeric NaN with median. Pass cat_features parameter for categoricals.
-  If you get a dtype error, cast categoricals to str first."
-- Game theory: "Write a strategy that starts by cooperating (return 0), then
-  copies the opponent's last move (tit-for-tat). If opponent defected twice
-  in a row, defect for 3 rounds then reset."
-- RL task: "Change learning_rate to 0.001 and increase n_steps to 2048.
-  Keep everything else the same."
-
-Example BAD direction:
-"Try a better approach." (Too vague. Executor will guess and likely fail.)
-
 ## Your Search Tree
 
 {tree_view}
@@ -151,74 +121,93 @@ Example BAD direction:
 
 {memory_section}
 
+## Your Task Now
+
+Before making a decision, you may inspect the actual code and commands that the
+executor ran for any node. This lets you understand EXACTLY what was tried and why
+it succeeded or failed.
+
+Look at the tree above and decide which nodes you want to inspect. You can request
+0 to 3 nodes. Request 0 if the tree is empty or you already understand what happened.
+
+Respond in EXACTLY this format:
+
+INSPECT: node_id_1, node_id_2
+[OR]
+INSPECT: NONE
+
+Brief explanation of what you want to understand from inspecting these nodes."""
+
+
+SCIENTIST_PROMPT_TURN2 = """Good. Now make your decision.
+
+{code_inspection}
+
+## Your Role as Mentor
+
+You are COACHING the executor. Give it a direction — you decide the right level
+of specificity. The executor can read all source files and figure out implementation
+details on its own. Focus on the IDEA, not the code.
+
 ## Decision Process
 
-Think step by step:
+Look at the tree and decide what to do next.
 
-1. ERROR DIAGNOSIS: For each failed node, look at the error message. What SPECIFICALLY
-   went wrong? Can you give the executor concrete advice to avoid that error?
-   - "TypeError: cannot convert" → tell executor to cast dtypes explicitly
-   - "ImportError" → tell executor which packages are available
-   - "Traceback in training" → the approach may be too complex, simplify
-   - Used all {max_actions} actions without validating → approach was too ambitious
+Step 1. DIAGNOSE: What worked and what failed? Look at scores and errors.
 
-2. WHAT'S WORKING: Which models/preprocessing got the best scores? Double down on
-   those with small, concrete variations (different hyperparams, add one feature).
+Step 2. DECIDE: Based on the tree, choose one of two modes:
+   A. DEEPEN an existing direction — if you see a promising branch that hasn't
+      been fully explored and has potential for improvement, propose the next
+      idea to try along that direction. Expand from the relevant node.
+   B. EXPLORE something brand new — if based on your learnings so far you want
+      to try a fundamentally different approach, start a new branch from root.
 
-3. DIVERSITY CHECK: Have you tried at least 3 fundamentally different approaches?
-   If not, try a new one. Keep it within the executor's capabilities (see above).
-   The executor already has all source files in context — don't ask it to read code.
+Step 3. BRAINSTORM 3 DIVERSE STRATEGIES: Imagine a probability distribution over
+   ALL possible strategies. Sample 3 such that each has probability < 0.2 — this
+   forces you beyond the obvious first ideas into less common approaches. Each
+   strategy must be fundamentally different from the others.
 
-4. BUDGET AWARENESS:
-   - {budget_left} >= 5: Try 1-2 new model families + refine the best
-   - {budget_left} == 3-4: One new simple model + refine the best
-   - {budget_left} <= 2: Only refine the best working approach with small tweaks
-
-5. EXPLOITATION LIMIT: Do NOT expand the same node more than 3 times. If you've
-   already tried 3 variations of the same approach, move on to something different.
-
-6. BRAINSTORM THEN CHOOSE: Before picking a direction, brainstorm 3-5 candidate
-   strategies. For each, assess:
-   - Can the executor actually implement this in <100 lines?
-   - Has something similar already been tried? What was the result?
-   - What's the expected improvement over the current best?
-   Then pick the ONE strategy with the best effort-to-reward ratio.
+Step 4. CHOOSE: Pick ONE strategy by sampling from your 3 candidates with roughly
+   equal probability (do NOT always pick the "safest" one). Consider:
+   - Has something similar already been tried? Don't repeat what failed.
+   - Can the executor realistically implement this?
+   - Budget awareness: {budget_left} nodes left. With >=5, prefer exploring.
+     With <=2, prefer refining the best working approach.
 
 ## Your Output
 
 Respond in EXACTLY this format:
 
 REASONING:
-[Your analysis: what worked, what failed and why.]
+[Your analysis: what worked, what failed and why. Identify which DIMENSIONS
+of the solution space have been explored vs unexplored.]
 
-CANDIDATES:
-1. [Strategy idea 1] — [why it might work / risk assessment]
-2. [Strategy idea 2] — [why it might work / risk assessment]
-3. [Strategy idea 3] — [why it might work / risk assessment]
-CHOSEN: [number] because [reason — consider executor capability]
-
-ACTION: expand <node_id>
-[OR]
-ACTION: draft_from_root
+STRATEGIES:
+1. [Strategy] → PARENT: [node_id or "root"] — [why this parent / risk assessment]
+2. [Strategy] → PARENT: [node_id or "root"] — [why this parent / risk assessment]
+3. [Strategy] → PARENT: [node_id or "root"] — [why this parent / risk assessment]
+CHOSEN: [number] because [reason — consider executor capability and diversity]
 
 DIRECTION:
-[Specific instructions for the executor for the CHOSEN strategy.
-Include exact model, exact hyperparameters, exact preprocessing steps.
-Keep it implementable in <100 lines of Python.]
+[Instructions for the executor for the CHOSEN strategy.
+The executor can read all source files — focus on the idea and target values,
+not code-level implementation details.]
 
 EXECUTOR_GUIDANCE:
 [Warnings and tips for the executor based on what you learned from the tree.
 E.g., "Do NOT use get_dummies — it causes memory errors on this dataset.
-Use LabelEncoder instead." or "Make sure to handle NaN in column X before
-passing to the model." Write NONE if no specific warnings.]
+Use LabelEncoder instead." Write NONE if no specific warnings.]
 
 MODE: explore
 [OR]
 MODE: exploit
 
 MEMORY:
-[One sentence capturing a new insight from this round's results.
-Write NONE if no new insights.]"""
+[One sentence about what you LEARNED. Must include evidence (what was tried,
+what score) and an insight. Do NOT repeat anything already in your memory.
+GOOD: "CatBoost (0.91) and LightGBM (0.90) both plateau — try feature engineering next."
+BAD: "CatBoost works well." (repeats known info, no new insight)
+Write NONE if no genuinely new insight.]"""
 
 
 # ---------------------------------------------------------------------------
@@ -459,8 +448,44 @@ class LLMGuidedTreeSearch:
     # Scientist decision
     # ------------------------------------------------------------------
 
+    def _format_node_code(self, node_id: str) -> str:
+        """Format a node's executor actions for the scientist to inspect."""
+        if node_id not in self.nodes:
+            return f"Node {node_id} not found."
+
+        node = self.nodes[node_id]
+        if not node.actions:
+            return f"Node {node_id}: No actions (baseline node)."
+
+        lines = [f"=== Node {node_id} (score: {node.score}) ==="]
+        for i, action in enumerate(node.actions):
+            cmd = action.get("action", "")
+            obs = action.get("observation", "")
+            # Truncate very long observations (e.g. training logs)
+            if len(obs) > 500:
+                obs = obs[:500] + "\n... (truncated)"
+            lines.append(f"--- Action {i} ---")
+            lines.append(f"$ {cmd}")
+            lines.append(obs)
+
+        return "\n".join(lines)
+
+    def _parse_inspect_response(self, text: str) -> list[str]:
+        """Parse the INSPECT: line from turn 1 to get node IDs."""
+        match = re.search(r"INSPECT:\s*(.+)", text)
+        if not match:
+            return []
+        raw = match.group(1).strip()
+        if raw.upper() == "NONE":
+            return []
+        # Split by comma and clean up
+        node_ids = [nid.strip() for nid in raw.split(",") if nid.strip()]
+        # Validate they exist and cap at 3
+        valid = [nid for nid in node_ids if nid in self.nodes]
+        return valid[:3]
+
     def _scientist_decide(self, budget_left: int) -> ScientistDecision:
-        """Call the scientist LLM to decide what to expand next."""
+        """Call the scientist LLM in two turns: inspect, then decide."""
         tree_view = self._build_tree_view()
 
         # Memory section
@@ -479,14 +504,13 @@ class LLMGuidedTreeSearch:
             baseline_score=self.container.baseline_score,
             data_head="(data preview omitted)",
         )
-        # Also include the executor's system prompt so scientist knows what
-        # code format / commands the executor uses
         task_details = (
             f"EXECUTOR SYSTEM PROMPT:\n{self.task.system_prompt}\n\n"
             f"TASK DESCRIPTION:\n{task_details}"
         )
 
-        prompt = SCIENTIST_PROMPT.format(
+        # --- Turn 1: Show tree, ask what to inspect ---
+        turn1_prompt = SCIENTIST_PROMPT_TURN1.format(
             task_description=task_desc,
             task_details=task_details,
             metric_name=self.task.primary_metric,
@@ -499,14 +523,43 @@ class LLMGuidedTreeSearch:
             memory_section=memory_section,
         )
 
+        messages = [{"role": "user", "content": turn1_prompt}]
+
         try:
-            resp = self.scientist.chat(
-                [{"role": "user", "content": prompt}],
-                temperature=0.3,
-            )
-            decision = self._parse_scientist_response(resp)
+            turn1_resp = self.scientist.chat(messages, temperature=0.3)
         except Exception as e:
-            print(f"  WARNING: Scientist LLM failed: {e}")
+            print(f"  WARNING: Scientist turn 1 failed: {e}")
+            turn1_resp = "INSPECT: NONE"
+
+        # Parse which nodes to inspect
+        inspect_ids = self._parse_inspect_response(turn1_resp)
+
+        # --- Build code inspection content ---
+        if inspect_ids:
+            print(f"  Scientist inspecting: {inspect_ids}")
+            code_parts = [self._format_node_code(nid) for nid in inspect_ids]
+            code_inspection = (
+                "Here is the code and output from the nodes you requested:\n\n"
+                + "\n\n".join(code_parts)
+            )
+        else:
+            code_inspection = "(No nodes inspected.)"
+
+        # --- Turn 2: Make decision with code context ---
+        turn2_prompt = SCIENTIST_PROMPT_TURN2.format(
+            code_inspection=code_inspection,
+            budget_left=budget_left,
+            max_actions=self.max_actions,
+        )
+
+        messages.append({"role": "assistant", "content": turn1_resp})
+        messages.append({"role": "user", "content": turn2_prompt})
+
+        try:
+            turn2_resp = self.scientist.chat(messages, temperature=0.3)
+            decision = self._parse_scientist_response(turn2_resp)
+        except Exception as e:
+            print(f"  WARNING: Scientist turn 2 failed: {e}")
             decision = ScientistDecision(
                 action="draft_from_root", node_id="root",
                 direction="Try a robust sklearn pipeline with cross-validation",
@@ -516,7 +569,12 @@ class LLMGuidedTreeSearch:
 
         # Log scientist reasoning
         print(f"\n  SCIENTIST REASONING:\n  {decision.reasoning[:300]}")
-        self._save_scientist_log(decision, budget_left, tree_view)
+        if inspect_ids:
+            print(f"  Inspected nodes: {inspect_ids}")
+        self._save_scientist_log(
+            decision, budget_left, tree_view,
+            inspected_nodes=inspect_ids, turn1_response=turn1_resp,
+        )
 
         return decision
 
@@ -524,22 +582,49 @@ class LLMGuidedTreeSearch:
         """Parse the scientist's structured output."""
         # Extract REASONING
         reasoning_match = re.search(
-            r"REASONING:\s*\n(.*?)(?=\nACTION:)", text, re.DOTALL
+            r"REASONING:\s*\n(.*?)(?=\nSTRATEGIES:|$)", text, re.DOTALL
         )
+        if not reasoning_match:
+            # Fallback: try old format
+            reasoning_match = re.search(
+                r"REASONING:\s*\n(.*?)(?=\nACTION:|$)", text, re.DOTALL
+            )
         reasoning = reasoning_match.group(1).strip() if reasoning_match else text[:200]
 
-        # Extract ACTION
+        # Extract node from STRATEGIES + CHOSEN (new format)
+        # Look for "N. ... → PARENT: node_id" lines, then use CHOSEN to pick one
         action = "draft_from_root"
         node_id = "root"
-        action_match = re.search(r"ACTION:\s*(expand\s+(\S+)|draft_from_root)", text)
-        if action_match:
-            full = action_match.group(1).strip()
-            if full.startswith("expand"):
-                action = "expand"
-                node_id = action_match.group(2) or "root"
-            else:
+
+        strat_lines = re.findall(
+            r"(\d+)\.\s.*?(?:→|->)\s*PARENT:\s*[\"']?(\S+?)[\"']?\s*(?:—|-|$)",
+            text
+        )
+        chosen_match = re.search(r"CHOSEN:\s*(\d+)", text)
+
+        if strat_lines and chosen_match:
+            # New format: extract parent from the chosen strategy
+            chosen_num = int(chosen_match.group(1))
+            for num_str, parent in strat_lines:
+                if int(num_str) == chosen_num:
+                    node_id = parent.strip().rstrip("—-").strip()
+                    break
+            # Determine action from node_id
+            if node_id == "root":
                 action = "draft_from_root"
-                node_id = "root"
+            else:
+                action = "expand"
+        else:
+            # Fallback: old ACTION format
+            action_match = re.search(r"ACTION:\s*(expand\s+(\S+)|draft_from_root)", text)
+            if action_match:
+                full = action_match.group(1).strip()
+                if full.startswith("expand"):
+                    action = "expand"
+                    node_id = action_match.group(2) or "root"
+                else:
+                    action = "draft_from_root"
+                    node_id = "root"
 
         # Extract DIRECTION
         direction_match = re.search(
@@ -578,7 +663,8 @@ class LLMGuidedTreeSearch:
         )
 
     def _save_scientist_log(self, decision: ScientistDecision, budget_left: int,
-                            tree_view: str):
+                            tree_view: str, inspected_nodes: list[str] | None = None,
+                            turn1_response: str = ""):
         """Save scientist decision to a log file for post-hoc analysis."""
         log_dir = self.output_dir / "scientist_logs"
         log_dir.mkdir(exist_ok=True)
@@ -596,6 +682,8 @@ class LLMGuidedTreeSearch:
             "reasoning": decision.reasoning,
             "tree_view": tree_view,
             "memory_state": list(self.memory),
+            "inspected_nodes": inspected_nodes or [],
+            "turn1_response": turn1_response,
         }
         with open(log_file, "w") as f:
             json.dump(data, f, indent=2)
@@ -970,6 +1058,8 @@ def main():
     parser.add_argument("--scientist-url", default="",
                         help="API base URL for scientist (empty = OpenAI default)")
     parser.add_argument("--scientist-temperature", type=float, default=0.3)
+    parser.add_argument("--scientist-thinking-budget", type=int, default=0,
+                        help="Thinking budget tokens for scientist (0 = disabled)")
 
     # Executor model
     parser.add_argument("--executor-model", default="Qwen/Qwen3-4B-Instruct-2507",
@@ -978,6 +1068,8 @@ def main():
                         help="vLLM URL for executor")
     parser.add_argument("--temperature", type=float, default=0.9,
                         help="Executor temperature")
+    parser.add_argument("--executor-thinking-budget", type=int, default=0,
+                        help="Thinking budget tokens for executor (0 = disabled)")
 
     # Convenience aliases
     parser.add_argument("--model", default="",
@@ -1009,11 +1101,13 @@ def main():
         base_url=args.scientist_url or "",
         model=args.scientist_model,
         temperature=args.scientist_temperature,
+        thinking_budget=args.scientist_thinking_budget,
     )
     executor = LLMClient(
         base_url=executor_url,
         model=executor_model,
         temperature=args.temperature,
+        thinking_budget=args.executor_thinking_budget,
     )
 
     container = ContainerManager(

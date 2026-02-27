@@ -77,6 +77,10 @@ class ExperimentConfig:
     base_output: str = ""      # override BASE_OUT (empty = use default)
     is_llm_guided: bool = False   # True for LLM-guided tree search (Exp 4)
     scientist_model: str = ""     # e.g. "gpt-4o" (only for is_llm_guided=True)
+    scientist_url: str = ""       # API base URL for scientist (empty = default)
+    executor_url: str = ""        # API base URL for executor (empty = don't pass)
+    thinking_budget: int = 0      # Thinking budget for executor (Claude)
+    scientist_thinking_budget: int = 0  # Thinking budget for scientist (Claude)
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +602,117 @@ def _build_suites():
                 ))
     SUITES["llm-guided"] = llm_guided_cfgs
 
+    # --- Strong Model Baselines (Experiment 4) ---
+    STRONG_OUT = str(Path(__file__).parent.parent / "outputs" / "Strong_Baselines")
+    STRONG_TASKS = [
+        ("tasks/titanic.yaml",                   "titanic",     False, 15),
+        ("tasks/regressionKaggleHousePrice.yaml", "houseprice",  False, 15),
+        ("tasks/battleOfSexes.yaml",              "bos",         False, 15),
+        ("tasks/rlMountainCarContinuous.yaml",    "mountaincar", True,  20),
+    ]
+    STRONG_BUDGETS = [5, 15]
+    STRONG_RUNS = 5
+    CLAUDE_MODEL = "claude-opus-4-20250514"
+    CLAUDE_URL = "https://api.anthropic.com/v1/"
+    QWEN_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+    QWEN_URL = "http://localhost:8000/v1"
+
+    # Suite 1: AIRA MCTS with Claude Opus executor
+    strong_aira_claude_cfgs: list[ExperimentConfig] = []
+    for task_config, task_label, needs_gpu, max_actions in STRONG_TASKS:
+        for budget in STRONG_BUDGETS:
+            for run in range(1, STRONG_RUNS + 1):
+                strong_aira_claude_cfgs.append(ExperimentConfig(
+                    name=f"aira_mcts_n{budget}_r{run}",
+                    task_config=task_config, task_label=task_label,
+                    selection_strategy="mcts", context="global",
+                    needs_gpu=needs_gpu, is_aira=True,
+                    node_budget=budget, max_actions=max_actions,
+                    model=CLAUDE_MODEL,
+                    vllm_url=CLAUDE_URL,
+                    temperature=0.9,
+                    thinking_budget=1024,
+                    reflexion=False,
+                    extra_args=["--uct-c", "0.25", "--num-children", "5"],
+                    base_output=str(Path(STRONG_OUT) / "aira_claude_opus"),
+                ))
+    SUITES["strong-aira-claude"] = strong_aira_claude_cfgs
+
+    # Suite 3: LLM-Guided, Claude for both scientist and executor
+    strong_claude_both_cfgs: list[ExperimentConfig] = []
+    for task_config, task_label, needs_gpu, max_actions in STRONG_TASKS:
+        for budget in STRONG_BUDGETS:
+            for run in range(1, STRONG_RUNS + 1):
+                strong_claude_both_cfgs.append(ExperimentConfig(
+                    name=f"llm_guided_n{budget}_r{run}",
+                    task_config=task_config, task_label=task_label,
+                    selection_strategy="llm_guided", context="global",
+                    needs_gpu=needs_gpu,
+                    node_budget=budget, initial_breadth=3, max_actions=max_actions,
+                    is_llm_guided=True,
+                    scientist_model=CLAUDE_MODEL,
+                    scientist_url=CLAUDE_URL,
+                    model=CLAUDE_MODEL,
+                    vllm_url=CLAUDE_URL,
+                    executor_url=CLAUDE_URL,
+                    temperature=0.9,
+                    thinking_budget=1024,
+                    scientist_thinking_budget=1024,
+                    base_output=str(Path(STRONG_OUT) / "llm_guided_claude_both"),
+                ))
+    SUITES["strong-llm-guided-claude-both"] = strong_claude_both_cfgs
+
+    # Suite 4: LLM-Guided, Claude scientist + Qwen executor
+    strong_claude_scientist_cfgs: list[ExperimentConfig] = []
+    for task_config, task_label, needs_gpu, max_actions in STRONG_TASKS:
+        for budget in STRONG_BUDGETS:
+            for run in range(1, STRONG_RUNS + 1):
+                strong_claude_scientist_cfgs.append(ExperimentConfig(
+                    name=f"llm_guided_n{budget}_r{run}",
+                    task_config=task_config, task_label=task_label,
+                    selection_strategy="llm_guided", context="global",
+                    needs_gpu=needs_gpu,
+                    node_budget=budget, initial_breadth=3, max_actions=max_actions,
+                    is_llm_guided=True,
+                    scientist_model=CLAUDE_MODEL,
+                    scientist_url=CLAUDE_URL,
+                    model=QWEN_MODEL,
+                    vllm_url=QWEN_URL,
+                    temperature=0.9,
+                    scientist_thinking_budget=1024,
+                    base_output=str(Path(STRONG_OUT) / "llm_guided_claude_scientist"),
+                ))
+    SUITES["strong-llm-guided-claude-scientist"] = strong_claude_scientist_cfgs
+
+    # Suite 5: LLM-Guided, Qwen for both scientist and executor
+    strong_qwen_both_cfgs: list[ExperimentConfig] = []
+    for task_config, task_label, needs_gpu, max_actions in STRONG_TASKS:
+        for budget in STRONG_BUDGETS:
+            for run in range(1, STRONG_RUNS + 1):
+                strong_qwen_both_cfgs.append(ExperimentConfig(
+                    name=f"llm_guided_n{budget}_r{run}",
+                    task_config=task_config, task_label=task_label,
+                    selection_strategy="llm_guided", context="global",
+                    needs_gpu=needs_gpu,
+                    node_budget=budget, initial_breadth=3, max_actions=max_actions,
+                    is_llm_guided=True,
+                    scientist_model=QWEN_MODEL,
+                    scientist_url=QWEN_URL,
+                    model=QWEN_MODEL,
+                    vllm_url=QWEN_URL,
+                    temperature=0.9,
+                    base_output=str(Path(STRONG_OUT) / "llm_guided_qwen_both"),
+                ))
+    SUITES["strong-llm-guided-qwen-both"] = strong_qwen_both_cfgs
+
+    # Meta-suite: all 4 strong baseline suites (suite 2 = feb22 aira_mcts already exists)
+    SUITES["strong-baselines"] = (
+        strong_aira_claude_cfgs
+        + strong_claude_both_cfgs
+        + strong_claude_scientist_cfgs
+        + strong_qwen_both_cfgs
+    )
+
 
 # ---------------------------------------------------------------------------
 # GPU Pool
@@ -677,6 +792,14 @@ def run_one_experiment(cfg: ExperimentConfig, gpu_pool: GPUPool,
         ]
         if cfg.scientist_model:
             cmd.extend(["--scientist-model", cfg.scientist_model])
+        if cfg.scientist_url:
+            cmd.extend(["--scientist-url", cfg.scientist_url])
+        if cfg.executor_url:
+            cmd.extend(["--executor-url", cfg.executor_url])
+        if cfg.scientist_thinking_budget > 0:
+            cmd.extend(["--scientist-thinking-budget", str(cfg.scientist_thinking_budget)])
+        if cfg.thinking_budget > 0:
+            cmd.extend(["--executor-thinking-budget", str(cfg.thinking_budget)])
         cmd.extend(cfg.extra_args)
     elif cfg.is_linear:
         cmd = [
@@ -716,6 +839,10 @@ def run_one_experiment(cfg: ExperimentConfig, gpu_pool: GPUPool,
         cmd.extend(["--vllm-url", cfg.vllm_url])
     if cfg.temperature > 0:
         cmd.extend(["--temperature", str(cfg.temperature)])
+
+    # Thinking budget for non-llm-guided scripts (aira, adaptive)
+    if not cfg.is_llm_guided and cfg.thinking_budget > 0:
+        cmd.extend(["--thinking-budget", str(cfg.thinking_budget)])
 
     # Reflexion flag (both adaptive_tree_search and aira support it)
     if not cfg.is_linear and not cfg.is_llm_guided:

@@ -946,6 +946,8 @@ def main():
                         help="Enable tree-level reflection (default: on)")
     parser.add_argument("--no-reflexion", dest="reflexion", action="store_false",
                         help="Disable tree-level reflection")
+    parser.add_argument("--thinking-budget", type=int, default=0,
+                        help="Thinking budget tokens for Claude models (0 = disabled)")
 
     # MCTS-specific
     parser.add_argument("--uct-c", type=float, default=0.25)
@@ -974,7 +976,8 @@ def main():
     print(f"Reflexion: {'enabled' if args.reflexion else 'disabled'}")
     print("=" * 60)
 
-    llm = LLMClient(args.vllm_url, args.model, args.temperature)
+    llm = LLMClient(args.vllm_url, args.model, args.temperature,
+                    thinking_budget=args.thinking_budget)
     container = ContainerManager(
         args.task_config, args.env_gpu, args.image_name,
         task_profile=task_profile,
