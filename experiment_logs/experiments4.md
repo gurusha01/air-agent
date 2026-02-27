@@ -177,7 +177,7 @@ Massive improvement! v2.1 is now the best method on BOS at n15. Scaling works: n
 - Executor can now modify any file via `cat << 'ENDOFFILE'`
 - Simplified prompt significantly
 
-### v5: Scientist Prompt Redesign (Current)
+### v5: Scientist Prompt Redesign
 
 **Problem diagnosed:** LLM-guided underperformed Adaptive MCTS (mean 50.65 vs 65.39 on mountaincar n5). Root cause analysis:
 
@@ -192,11 +192,39 @@ Massive improvement! v2.1 is now the best method on BOS at n15. Scaling works: n
 - Natural explore/deepen decision: "DEEPEN if promising branch has potential, EXPLORE if you want something fundamentally different"
 - Budget awareness: "With >=5 nodes left, prefer exploring. With <=2, prefer refining."
 
-**Results (v5, mountaincar n5, single test run):**
-- Best: **68.90** — matching best Adaptive MCTS result
-- Tree: root_0 (22.27, hyperparams), root_1 (68.90, reward shaping), root_1_0 (68.90), root_1_1 (FAIL, syntax), root_2 (FAIL, syntax)
-- Scientist proposed reward shaping on step 2 (not just hyperparameter tuning), showing real diversity
-- 2/5 nodes failed due to syntax errors in code modifications — executability still a challenge
+**Results (v5, mountaincar n5, 5 runs):**
+- Scores: 68.90, 33.79, (3 runs not completed before v6 launched)
+- r1: 68.90 — reward shaping (position bonus) worked on first try
+- r2: 33.79 — all 4 code modification nodes FAILED (gymnasium vs gymnax confusion, syntax errors in helpers.py). Scientist never pivoted away from code changes.
+
+### v6: Compile-before-write Guard (Current)
+
+**Problem diagnosed from v5 failures:** The executor writes broken Python code and wastes all remaining actions on a doomed training run. Two specific failure patterns:
+1. `python -c` with entire class definitions on one semicolon-separated line (Python syntax doesn't allow this for decorators/class bodies)
+2. `sed -i` with `\n` to inject multi-line code (unreliable, introduces gymnasium imports into gymnax codebase)
+
+**Change:** Updated RL executor prompt to teach `python -c` as a test-then-write tool:
+- Told executor: "python -c does NOT modify any file by itself. It only runs code in memory."
+- Told executor: "To change a file, read it, modify it, and write it back within python -c."
+- Added rule: "Always compile() your new code first to catch syntax errors. If compile() fails, fix the error — do NOT write broken code."
+
+**Results (v6, mountaincar n5, 5 runs):**
+
+| Run | Best | Scores per node | Failure pattern |
+|-----|------|----------------|-----------------|
+| r1 | **68.90** | 49.72, 54.43, 30.53, **68.90**, 68.90 | — |
+| r2 | **68.90** | **68.90**, 49.72, 68.90, 49.72, 49.72 | — |
+| r3 | 51.39 | FAIL, 22.27, **51.39**, 51.39, 51.39 | root_0: gymnasium import into gymnax; root_2_0: class on one line ×15 |
+| r4 | 51.39 | **51.39**, 51.39, 51.39, -22.44, -49B | root_0_2: entropy_coeff caused divergence |
+| r5 | **68.90** | 51.39, 51.39, 25.12, **68.90**, 25.12 | — |
+
+**Mean: 61.70** (up from 50.65 with old prompt). 3/5 runs hit 68.90.
+
+**Key observation:** The compile() guard didn't fully work because Qwen 4B doesn't follow the two-step workflow. Instead of (1) compile → (2) write, it puts the entire class on one semicolon-separated line in a single `python -c`, which fails at syntax level before compile() is reached. The nodes that succeed are the ones doing **config-only changes** (`sed -i` on config.yaml) or simple code modifications.
+
+**Two winning strategies on mountaincar:**
+1. `sed -i 's/num_hidden_units: 128/num_hidden_units: 512/g' src/config.yaml` → **68.90** (config only, 5 actions)
+2. Reward shaping: add position-based bonus to reward → **68.90** (code change, works ~30% of the time)
 
 ---
 
@@ -207,11 +235,11 @@ Massive improvement! v2.1 is now the best method on BOS at n15. Scaling works: n
 | Method | Mean Best | Min | Max | Std |
 |--------|----------|-----|-----|-----|
 | **Adaptive MCTS** | **65.39** | 51.39 | 68.90 | 7.84 |
+| LLM-Guided v6 | 61.70 | 51.39 | 68.90 | 9.62 |
 | AIRA Vanilla MCTS | 56.82 | 44.54 | 68.90 | 11.12 |
 | LLM-Guided (old prompt) | 50.65 | 49.72 | 54.36 | 2.07 |
-| LLM-Guided v5 (new prompt) | 68.90* | — | — | — |
 
-*Baseline: 33.79. (*) = single test run*
+*Baseline: 33.79*
 
 ### Multitask Results (LLM-Guided Qwen Both, old scientist prompt)
 
