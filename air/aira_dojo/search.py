@@ -38,6 +38,7 @@ from air.tree_search import (
     TaskProfile,
     TreeNode,
     extract_command,
+    classify_execution,
     get_task_profile,
 )
 
@@ -194,6 +195,7 @@ class BaseSearch:
         # Extract a short description from the operator message (first line or key phrase)
         first_line = user_message.split('\n')[0][:100]
         strategy_desc = f"{op_type.value}: {first_line}"
+        exec_status, err_type = classify_execution(actions, score)
         child = TreeNode(
             node_id=child_id,
             parent_id=parent_id,
@@ -205,6 +207,8 @@ class BaseSearch:
             snapshot_path=snap,
             error=error,
             reflection=reflection,
+            execution_status=exec_status,
+            error_type=err_type,
         )
         self.nodes[child_id] = child
         parent.children.append(child_id)
@@ -319,20 +323,32 @@ class BaseSearch:
     def _build_simple_memory(self) -> str:
         """Simple memory: summaries of all non-buggy nodes.
 
-        Used by DRAFT and IMPROVE operators. Shows what has been tried
-        and what scores were achieved.
+        Used by DRAFT and IMPROVE operators. Shows what has been tried,
+        scores achieved, and execution status (so executor knows if score
+        is genuine vs baseline fallback).
         """
         lines = []
         for nid, node in self.nodes.items():
             if nid == "root":
                 continue
+            status = node.execution_status or ""
+            err_t = node.error_type or ""
             if node.score is not None:
+                status_tag = ""
+                if status == "training_failed":
+                    fallback = ""
+                    if (self.container.baseline_score is not None
+                            and abs(node.score - self.container.baseline_score) < 0.02):
+                        fallback = " [BASELINE FALLBACK — training crashed]"
+                    status_tag = f" [training_failed:{err_t or 'unknown'}]{fallback}"
+                elif status == "success":
+                    status_tag = " [success]"
                 lines.append(
-                    f"- {node.strategy[:120]} -> Score: {node.score:.4f}"
+                    f"- {node.strategy[:120]} -> Score: {node.score:.4f}{status_tag}"
                 )
             elif node.error:
                 lines.append(
-                    f"- {node.strategy[:120]} -> FAILED: {node.error[:80]}"
+                    f"- {node.strategy[:120]} -> FAILED ({err_t or status or 'unknown'}): {node.error[:80]}"
                 )
         return "\n".join(lines) if lines else "(no previous attempts)"
 
@@ -454,6 +470,8 @@ class BaseSearch:
             "strategy": node.strategy,
             "score": node.score,
             "error": node.error,
+            "execution_status": node.execution_status,
+            "error_type": node.error_type,
             "actions": node.actions,
             "conversation_length": len(node.conversation_history),
             "reflection": node.reflection or None,

@@ -310,6 +310,162 @@ MANDATORY WORKFLOW (follow this EXACT order):
         task_type="rl",
     ),
 
+    "rlMountainCarContinuousReinforce": TaskProfile(
+        name="Mountain Car Continuous REINFORCE (RL)",
+        primary_metric="Reward Mean",
+        higher_is_better=True,
+        script_name="src/train.py",
+        submission_file=None,
+        data_head_cmd="cat src/config.yaml",
+        strategy_topic="the MountainCarContinuous REINFORCE task (improve REINFORCE training to maximize mean reward)",
+        branch_write_instruction=(
+            "Modify the code and/or config to improve the agent's performance, then run 'python src/train.py', then 'validate'.\n"
+            "You can modify any file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py.\n"
+            "IMPORTANT: You MUST read the existing code first before writing ANY modifications.\n"
+            "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using sed -i.\n"
+            "Output your first command (cat src/networks.py):"
+        ),
+        root_task_desc=(
+            "MountainCarContinuous-v0 — RL REINFORCE Training.\n"
+            "Baseline Reward Mean: {baseline_score:.4f}\n\n"
+            "Environment: MountainCarContinuous-v0 (gymnax). Car must reach hilltop (pos >= 0.45).\n"
+            "Reward: -0.1*action^2 per step, +100 on goal. Episode: 999 steps.\n\n"
+            "Current config:\n{data_head}\n\n"
+            "Source files: src/train.py, src/networks.py, src/policy.py, src/helpers.py, src/config.yaml\n"
+            "You can modify any of these files.\n\n"
+            "IMPORTANT: You MUST read the existing source code BEFORE making any changes.\n"
+            "Your first 3 commands MUST be:\n"
+            "  1. cat src/networks.py\n"
+            "  2. cat src/policy.py\n"
+            "  3. cat src/train.py\n"
+            "Only AFTER reading all 3 files should you start modifying code.\n\n"
+            "Goal: Maximize mean reward. Output your first command (cat src/networks.py):"
+        ),
+        system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
+
+EDITING FILES:
+- For config changes: sed -i 's/old/new/g' src/config.yaml
+- For code changes: use python -c to make modifications.
+  Before writing, always compile() your new code first to catch syntax errors.
+- For large rewrites: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+
+COMMANDS:
+- sed -i 's/old/new/g' file - Config substitutions
+- python -c "..." - Test and apply code changes
+- cat << 'ENDOFFILE' > file ... ENDOFFILE - Full file rewrite
+- python src/train.py - Train the agent
+- validate - Evaluate checkpoints (ONLY after training completes)
+- cat, ls, head - View files
+
+CRITICAL RULES:
+1. ONE command per response
+2. ALWAYS run 'python src/train.py' BEFORE 'validate'
+3. The class name 'Model' in networks.py must NOT be changed
+4. You MUST read existing source files BEFORE writing any modifications
+5. rm -rf checkpoints before re-training
+6. When modifying .py files, always verify with compile() before writing
+
+AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, distrax. Do NOT pip install anything.
+
+WORKSPACE:
+- src/config.yaml - Hyperparameters
+- src/networks.py - Actor-Critic model
+- src/policy.py - Training loop, rollout manager, loss functions
+- src/train.py - Entry point
+- src/helpers.py - Config loading, pickle save/load
+
+MANDATORY WORKFLOW:
+1. cat src/networks.py  (READ first)
+2. cat src/policy.py
+3. cat src/train.py
+4. Make modifications
+5. rm -rf checkpoints
+6. python src/train.py
+7. validate""",
+        use_generic_conda=False,
+        needs_gpu=True,
+        step_timeout=2400.0,
+        task_type="rl",
+    ),
+
+    "rlBreakoutMinAtar": TaskProfile(
+        name="Breakout MinAtar (RL)",
+        primary_metric="Reward Mean",
+        higher_is_better=True,
+        script_name="src/train.py",
+        submission_file=None,
+        data_head_cmd="cat src/config.yaml",
+        strategy_topic="the Breakout MinAtar RL task (improve PPO training for Breakout, maximize mean reward)",
+        branch_write_instruction=(
+            "Modify the code and/or config to improve the PPO agent's performance, then run 'python src/train.py', then 'validate'.\n"
+            "You can modify any file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py.\n"
+            "IMPORTANT: You MUST read the existing code first before writing ANY modifications.\n"
+            "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using sed -i.\n"
+            "Output your first command (cat src/networks.py):"
+        ),
+        root_task_desc=(
+            "Breakout MinAtar — RL PPO Training.\n"
+            "Baseline Reward Mean: {baseline_score:.4f}\n\n"
+            "Environment: Breakout-MinAtar (gymnax). Control paddle to bounce ball and break bricks.\n"
+            "Ball moves diagonally, bounces off paddle/walls. Game ends when ball hits bottom.\n\n"
+            "Current config:\n{data_head}\n\n"
+            "Source files: src/train.py, src/networks.py, src/policy.py, src/helpers.py, src/config.yaml\n"
+            "You can modify any of these files.\n\n"
+            "IMPORTANT: You MUST read the existing source code BEFORE making any changes.\n"
+            "Your first 3 commands MUST be:\n"
+            "  1. cat src/networks.py\n"
+            "  2. cat src/policy.py\n"
+            "  3. cat src/train.py\n"
+            "Only AFTER reading all 3 files should you start modifying code.\n\n"
+            "Goal: Maximize mean reward. Output your first command (cat src/networks.py):"
+        ),
+        system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
+
+EDITING FILES:
+- For config changes: sed -i 's/old/new/g' src/config.yaml
+- For code changes: use python -c to make modifications.
+  Before writing, always compile() your new code first to catch syntax errors.
+- For large rewrites: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+
+COMMANDS:
+- sed -i 's/old/new/g' file - Config substitutions
+- python -c "..." - Test and apply code changes
+- cat << 'ENDOFFILE' > file ... ENDOFFILE - Full file rewrite
+- python src/train.py - Train the PPO agent
+- validate - Evaluate checkpoints (ONLY after training completes)
+- cat, ls, head - View files
+
+CRITICAL RULES:
+1. ONE command per response
+2. ALWAYS run 'python src/train.py' BEFORE 'validate'
+3. The class name 'Model' in networks.py must NOT be changed
+4. You MUST read existing source files BEFORE writing any modifications
+5. rm -rf checkpoints before re-training
+6. When modifying .py files, always verify with compile() before writing
+
+AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, distrax. Do NOT pip install anything.
+
+WORKSPACE:
+- src/config.yaml - Hyperparameters
+- src/networks.py - Actor-Critic model (CNN for MinAtar observation space)
+- src/policy.py - PPO training loop, rollout manager, loss functions
+- src/train.py - Entry point
+- src/helpers.py - Config loading, pickle save/load
+
+MANDATORY WORKFLOW:
+1. cat src/networks.py  (READ first)
+2. cat src/policy.py
+3. cat src/train.py
+4. Make modifications
+5. rm -rf checkpoints
+6. python src/train.py
+7. validate""",
+        use_generic_conda=False,
+        needs_gpu=True,
+        step_timeout=2400.0,
+        task_type="rl",
+    ),
+
     "rlMetaMaze": TaskProfile(
         name="MetaMaze Navigation (RL)",
         primary_metric="Reward Mean",
@@ -462,6 +618,62 @@ class TreeNode:
     error: str | None = None
     snapshot_path: str = ""
     reflection: str = ""  # tree-level reflection injected before this node
+    # Environment feedback fields (set after execution)
+    execution_status: str = ""  # "success" | "training_failed" | "no_validate" | "env_error"
+    error_type: str = ""        # Python exception class, e.g. "FileNotFoundError"
+
+
+def classify_execution(action_log: list[dict], score) -> tuple[str, str]:
+    """Classify what happened during an executor run.
+
+    Returns (execution_status, error_type):
+      - execution_status: "success" | "training_failed" | "no_validate" | "env_error"
+      - error_type: Python exception class name if any, else ""
+
+    "training_failed" means training crashed with a Traceback but validate still
+    returned a score (likely from a pre-existing baseline submission file).
+    """
+    import re as _re
+
+    error_type = ""
+    has_training_error = False
+
+    for action in action_log:
+        cmd = action.get("action", "")
+        obs = action.get("observation", "") or ""
+
+        # Only look for errors in python execution steps
+        is_python = cmd.strip().startswith("python") or "python src/" in cmd
+        if is_python and "Traceback (most recent call last)" in obs:
+            has_training_error = True
+            # Extract the last error class name from the traceback
+            for line in reversed(obs.strip().split("\n")):
+                line = line.strip()
+                m = _re.match(r'^([A-Za-z_.]+(?:Error|Exception|Interrupt)):', line)
+                if m:
+                    error_type = m.group(1).split(".")[-1]
+                    break
+
+        # CUDA OOM can appear outside tracebacks
+        if "CUDA out of memory" in obs or "OutOfMemoryError" in obs:
+            has_training_error = True
+            if not error_type:
+                error_type = "CUDAOutOfMemory"
+
+    if score is None:
+        # Check if a forced validate was attempted
+        last_action = action_log[-1].get("action", "") if action_log else ""
+        if "validate (forced)" in last_action:
+            status = "no_submission_produced"
+        else:
+            status = "no_validate_called"
+    elif has_training_error:
+        # Got a score despite training errors → likely baseline fallback file was scored
+        status = "training_failed"
+    else:
+        status = "success"
+
+    return status, error_type
 
 
 # ---------------------------------------------------------------------------
@@ -695,11 +907,12 @@ class LLMClient:
 
     def chat(self, messages: list[dict], temperature: float | None = None) -> str:
         is_reasoning = any(t in self.model for t in ("o1", "o3", "o4"))
+        is_claude = "claude" in self.model.lower()
         token_key = "max_completion_tokens" if is_reasoning or "gpt-5" in self.model else "max_tokens"
         max_tokens = 16384 if is_reasoning else 4096
-        # When thinking is enabled, budget is in addition to output tokens
-        if self.thinking_budget > 0:
-            max_tokens = max(max_tokens, self.thinking_budget + 4096)
+        # Claude: thinking budget is separate from output tokens — increase max.
+        if self.thinking_budget > 0 and is_claude:
+            max_tokens = max(max_tokens, self.thinking_budget + 8192)
         kwargs = {
             "model": self.model,
             "messages": messages,
@@ -708,12 +921,17 @@ class LLMClient:
         if not is_reasoning:
             kwargs["temperature"] = temperature or self.temperature
 
-        # Add thinking budget for Claude via extra_body
-        if self.thinking_budget > 0:
+        # o1/o3/o4 with thinking budget: cap total tokens (thinking + output).
+        # 6144 output buffer is enough for any single ReAct action or script edit.
+        if self.thinking_budget > 0 and is_reasoning and not is_claude:
+            max_tokens = self.thinking_budget + 6144
+            kwargs[token_key] = max_tokens
+
+        # Claude: enable extended thinking via Anthropic extra_body
+        if self.thinking_budget > 0 and is_claude:
             kwargs["extra_body"] = {
                 "thinking": {"type": "enabled", "budget_tokens": self.thinking_budget}
             }
-            # Anthropic requires temperature=1 (or unset) when thinking is enabled
             kwargs.pop("temperature", None)
 
         for attempt in range(3):
@@ -1193,6 +1411,9 @@ def main():
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--max-actions", type=int, default=15)
     parser.add_argument("--env-gpu", default="7")
+    parser.add_argument("--no-gpu", action="store_true",
+                        help="Run without GPU (CPU only). Passes devices=['cpu'] to MLGym, "
+                             "skipping the --gpus flag in the container command.")
     parser.add_argument("--image-name", default="aigym/mlgym-agent:latest")
     parser.add_argument("--task-config", default="tasks/titanic.yaml")
     parser.add_argument("--output-dir", default="outputs/tree_search")
@@ -1222,8 +1443,10 @@ def main():
     print(f"Primary metric: {task_profile.primary_metric} ({'higher' if task_profile.higher_is_better else 'lower'} is better)")
     print()
 
+    env_gpu = "cpu" if args.no_gpu else args.env_gpu
+
     llm = LLMClient(args.vllm_url, args.model, args.temperature)
-    container = ContainerManager(args.task_config, args.env_gpu, args.image_name,
+    container = ContainerManager(args.task_config, env_gpu, args.image_name,
                                  task_profile=task_profile)
 
     print("Creating MLGym container...")

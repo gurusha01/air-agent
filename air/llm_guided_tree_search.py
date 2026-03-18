@@ -46,6 +46,7 @@ from air.tree_search import (
     LLMClient,
     TreeNode,
     extract_command,
+    classify_execution,
     MLGYM_PATH,
 )
 
@@ -390,31 +391,49 @@ class LLMGuidedTreeSearch:
             # Strategy summary
             strategy = n.strategy[:120] if n.strategy else "N/A"
 
-            # Error diagnosis — give the scientist enough to coach the executor
+            # Environment feedback — give the scientist a clear status label
             error_str = ""
-            if n.score is None and n.actions:
-                # Count how many actions were errors vs productive
-                error_actions = [
-                    a for a in n.actions
-                    if "Traceback" in a.get("observation", "")
-                    or "Error" in a.get("observation", "")
-                ]
-                # Show the LAST error (most diagnostic)
-                if error_actions:
-                    last_err = error_actions[-1]["observation"]
-                    # Extract just the error type and message
-                    err_lines = last_err.strip().split("\n")
-                    err_msg = err_lines[-1][:120] if err_lines else last_err[:120]
+            if n.node_id != "root":
+                status = n.execution_status or ""
+                err_t = n.error_type or ""
+
+                if status == "success":
+                    error_str = f"\n{prefix}  STATUS: success"
+                elif status == "training_failed":
+                    fallback_note = ""
+                    if self.container.baseline_score is not None and n.score is not None:
+                        if abs(n.score - self.container.baseline_score) < 0.02:
+                            fallback_note = " → score is likely baseline fallback, NOT real training result"
                     error_str = (
-                        f"\n{prefix}  FAILURE: {len(error_actions)}/{len(n.actions)} actions hit errors. "
-                        f"Last error: {err_msg}"
+                        f"\n{prefix}  STATUS: training_failed"
+                        + (f" ({err_t})" if err_t else "")
+                        + fallback_note
                     )
-                elif len(n.actions) >= self.max_actions:
-                    error_str = f"\n{prefix}  FAILURE: Ran out of actions ({len(n.actions)}) without validating"
-                else:
-                    error_str = f"\n{prefix}  FAILURE: {n.error[:120]}" if n.error else ""
-            elif n.error:
-                error_str = f"\n{prefix}  Error: {n.error[:120]}"
+                elif status in ("no_validate_called", "no_submission_produced", "env_error"):
+                    error_str = (
+                        f"\n{prefix}  STATUS: {status}"
+                        + (f" ({err_t})" if err_t else "")
+                    )
+                elif n.score is None and n.actions:
+                    # Fallback for old nodes without execution_status
+                    error_actions = [
+                        a for a in n.actions
+                        if "Traceback" in a.get("observation", "")
+                    ]
+                    if error_actions:
+                        last_err = error_actions[-1]["observation"]
+                        err_lines = last_err.strip().split("\n")
+                        err_msg = err_lines[-1][:120] if err_lines else last_err[:120]
+                        error_str = (
+                            f"\n{prefix}  STATUS: training_failed"
+                            f" — Last error: {err_msg}"
+                        )
+                    elif len(n.actions) >= self.max_actions:
+                        error_str = f"\n{prefix}  STATUS: no_submission_produced (ran out of {len(n.actions)} actions)"
+                    else:
+                        error_str = f"\n{prefix}  STATUS: failed — {n.error[:120]}" if n.error else ""
+                elif n.error:
+                    error_str = f"\n{prefix}  STATUS: env_error — {n.error[:120]}"
 
             # Parent comparison
             parent_note = ""
@@ -457,7 +476,10 @@ class LLMGuidedTreeSearch:
         if not node.actions:
             return f"Node {node_id}: No actions (baseline node)."
 
-        lines = [f"=== Node {node_id} (score: {node.score}) ==="]
+        status_label = node.execution_status or "unknown"
+        if node.error_type:
+            status_label += f":{node.error_type}"
+        lines = [f"=== Node {node_id} (score: {node.score}, status: {status_label}) ==="]
         for i, action in enumerate(node.actions):
             cmd = action.get("action", "")
             obs = action.get("observation", "")
@@ -733,6 +755,8 @@ class LLMGuidedTreeSearch:
             snap = ""
             error = str(e)
 
+        exec_status, err_type = classify_execution(actions, score)
+
         child = TreeNode(
             node_id=child_id,
             parent_id=parent_id,
@@ -743,6 +767,8 @@ class LLMGuidedTreeSearch:
             conversation_history=final_msgs,
             snapshot_path=snap,
             error=error,
+            execution_status=exec_status,
+            error_type=err_type,
         )
         self.nodes[child_id] = child
         parent.children.append(child_id)
@@ -980,6 +1006,8 @@ class LLMGuidedTreeSearch:
             "strategy": node.strategy,
             "score": node.score,
             "error": node.error,
+            "execution_status": node.execution_status,
+            "error_type": node.error_type,
             "actions": node.actions,
             "conversation_length": len(node.conversation_history),
         }
