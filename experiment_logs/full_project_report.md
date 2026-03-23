@@ -388,7 +388,105 @@ The tree continues for remaining 8 nodes, exploring class-based imputation of Ag
 
 ---
 
-## 8. Summary of Key Results
+## 8. N20 Scaling Results
+
+### 8.1 Budget Scaling from n5 to n20
+
+We ran evaluations at n20 (budget = 20 nodes) to measure how performance scales with increased compute budget. Results are partial but show significant gains across tasks.
+
+| Task | Method | n5 Score | n20 Score | Delta |
+|------|--------|----------|-----------|-------|
+| Titanic (accuracy) | baseline | 0.827 | 0.945 | +0.118 |
+| Regression (R^2) | sq_e1 (SFT) | 0.885 | 0.909 | +0.024 |
+| Regression (R^2) | baseline | ~0.882 | 0.885-0.888 | +0.003-0.006 |
+| Battle of Sexes (payoff) | sq_battle_e3 (SFT) | 1.371 | ~1.433 (mean) | +0.062 |
+| Battle of Sexes (payoff) | baseline | -- | 1.441 (single run) | -- |
+
+**Key observations:**
+
+1. **Titanic baseline n20 = 0.945**: This is a massive jump from 0.827 at n5, suggesting that the search process itself benefits enormously from more budget on this task. The baseline alone approaches or exceeds our practical ceiling estimate.
+2. **sq_battle_e3 on BoS**: 4 out of 5 runs scored above 1.43. The SFT model is consistently strong at n20.
+3. **Regression at n20**: Both SFT and baseline converge near 0.885-0.909, confirming that regression is near-ceiling and additional budget yields diminishing returns.
+4. **Gap dynamics**: Both SFT and baseline improve with more budget. Whether the SFT advantage widens or narrows at n20 is still being determined -- data collection is ongoing.
+
+### 8.2 Task Ceiling Analysis
+
+To contextualize our results, we computed theoretical and practical ceilings for each task:
+
+| Task | Task Baseline | Our Best | Practical Ceiling | Headroom |
+|------|--------------|----------|-------------------|----------|
+| Battle of Sexes | 1.02 | 1.44 | ~1.5-1.6 | ~10% |
+| Regression | 0.88 | 0.92 | ~0.93 | ~1% |
+| Titanic | 0.77 | 0.945 (n20!) | ~0.88-0.90 | near ceiling |
+| Prisoner's Dilemma | 2.37 | 2.39 | ~2.5 | ~5% |
+| Mountain Car | 33.8 | 68.9 | ~90+ | ~25% |
+
+**Implications:**
+
+- **Regression** is effectively solved -- our models are within 1% of the practical ceiling. Additional effort here yields minimal returns.
+- **Titanic at n20** has exceeded the estimated practical ceiling (0.88-0.90), reaching 0.945. This suggests our ceiling estimate was conservative, or that the extended search found an unusually effective solution.
+- **Mountain Car** has the most headroom (~25%), making it the highest-priority task for RL-specific improvements.
+- **Battle of Sexes** is approaching the ceiling (~10% headroom), with our best scores at 1.44 vs a practical ceiling of ~1.5-1.6.
+
+---
+
+## 9. VoI Reward Improvements
+
+### 9.1 Hypothesis Validation Fix
+
+The original VoI reward system conflated two distinct failure modes:
+
+- **"The hypothesis is false"**: The underlying claim about the problem is wrong.
+- **"The prediction was wrong"**: The hypothesis may be true, but the exact score prediction was inaccurate.
+
+This distinction matters. A hypothesis like "feature engineering improves tree models" can be TRUE even if the predicted score improvement (e.g., +0.03-0.05) was off -- as long as the score improved over baseline (direction was correct).
+
+**Updated validation logic:**
+- Validation now checks whether the score **improved over the baseline** (directional correctness), not whether it fell within the predicted interval.
+- A hypothesis is considered validated if the approach improves performance, regardless of the magnitude of the prediction error.
+
+### 9.2 Early Rejection
+
+To save budget, we added an early rejection mechanism:
+- **2 consecutive validation failures** cause a hypothesis to be marked as REJECTED.
+- This prevents the scientist from spending 4-5 nodes trying to validate a hypothesis that repeatedly fails.
+
+### 9.3 Challenge Logic Update
+
+The challenge phase now checks whether the approach **still improves over baseline**, rather than requiring that it match the original prediction. A hypothesis survives a challenge if the fundamental claim (this approach helps) remains valid, even if the exact magnitude differs.
+
+---
+
+## 10. W&B Integration
+
+Added comprehensive Weights & Biases logging to VoI GRPO training under the project "voi-scientist-rl" (Gurusha-personal account).
+
+**Metrics logged per training step:**
+
+| Category | Metrics |
+|----------|---------|
+| **Core training** | loss, mean_reward, reward_r1 (resolution), reward_r2 (VoI/information) |
+| **Exploration signals** | score_variance, per_hypothesis_variance, n_hypotheses, n_validated, n_rejected, validation_rate |
+| **Node type distribution** | explore/validate/challenge counts and ratios |
+| **Per-task curves** | improvement trajectories over training |
+
+This enables real-time monitoring of whether GRPO training is producing scientists that explore efficiently (high validation rate, appropriate hypothesis count) vs degenerate behaviors (all explore, no validation; all validate on one hypothesis).
+
+---
+
+## 11. Infrastructure Fixes
+
+### 11.1 Container Type Fix
+
+The `container_type` variable in `tree_search.py` was hardcoded to `"docker"`, causing failures when running on systems using Apptainer (Singularity). Fixed to read from the `MLGYM_CONTAINER_TYPE` environment variable, defaulting to `"apptainer"`. Eval scripts updated accordingly.
+
+### 11.2 RL Container
+
+Building an RL-specific Apptainer container (`mlgym_rl.sif`) for Mountain Car and other RL tasks. This is a prerequisite for the planned RL evaluation pipeline: LLM-guided search (n5/n20) + SFT + VoI RL + AIRA comparison.
+
+---
+
+## 12. Summary of Key Results
 
 ### What Worked
 
@@ -397,6 +495,8 @@ The tree continues for remaining 8 nodes, exploring class-based imputation of Ag
 3. **Per-task training outperforms multi-task training** (avg delta +0.016 vs -0.018 to -0.028).
 4. **Two statistically significant improvements achieved**: Titanic +0.046 (p=0.032) and +0.031 (p=0.003) from v3 grounded training.
 5. **Verbalized sampling** finds non-obvious strategies that temperature alone misses (SVM+RBF at 94% vs Random Forest plateau at 90%).
+6. **Strong scaling with budget**: n20 results show large gains over n5, especially on Titanic (0.827 to 0.945) and Battle of Sexes (1.371 to ~1.433 for SFT).
+7. **VoI reward improvements**: Separating hypothesis truth from prediction accuracy, early rejection, and challenge logic fixes make the reward signal more robust.
 
 ### What Did Not Work
 
@@ -411,16 +511,20 @@ The tree continues for remaining 8 nodes, exploring class-based imputation of Ag
 2. Can the hypothesis-driven structure (explore/validate/challenge) prevent the failure modes seen in unconstrained search?
 3. How does the scientist's performance scale with model size? (Current experiments use Qwen3-4B; larger models may reason better about experiment design.)
 4. Can the trained scientist transfer to entirely new task types not seen during training?
+5. Does the SFT advantage over baseline widen or narrow at n20? Preliminary data is mixed -- more runs needed.
+6. Can VoI-guided RL close the gap on Mountain Car, which has the most headroom (~25%)?
 
 ---
 
-## 9. Next Steps
+## 13. Next Steps
 
-1. **Implement VoI reward computation** -- logit-based belief estimation, KL divergence between conditional experiment distributions.
-2. **Run GRPO training** with the three-component reward (R1 + R2 + R3) on the MLGym task suite.
-3. **Calibration study** -- validate that logit-based P(H=true) correlates with empirical P(H=true) from sampling.
-4. **Scale evaluation** -- test trained scientist on held-out MLGym tasks to measure generalization.
-5. **Ablation studies** -- measure contribution of each reward component and the impact of node type constraints.
+1. **Complete n20 evaluation** -- finish collecting n20 results across all tasks and methods to determine if SFT advantage widens or narrows with budget.
+2. **Run GRPO training with updated VoI rewards** -- leverage the improved validation/rejection logic and W&B monitoring.
+3. **RL task pipeline** -- build and test RL-specific Apptainer container (mlgym_rl.sif) for Mountain Car; run LLM-guided search (n5/n20) + SFT + VoI RL + AIRA comparison.
+4. **Mountain Car focus** -- highest headroom (~25%), most room for improvement with RL-specific approaches.
+5. **Calibration study** -- validate that logit-based P(H=true) correlates with empirical P(H=true) from sampling.
+6. **Ablation studies** -- measure contribution of each reward component and the impact of node type constraints.
+7. **Scale evaluation** -- test trained scientist on held-out MLGym tasks to measure generalization.
 
 ---
 

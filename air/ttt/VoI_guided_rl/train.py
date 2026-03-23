@@ -378,6 +378,28 @@ def train(args):
                          "improvement", "n_hypotheses", "n_validated", "elapsed"])
     log_file.flush()
 
+    # W&B init
+    use_wandb = not args.no_wandb
+    if use_wandb:
+        import wandb
+        wandb.init(
+            project="voi-scientist-rl",
+            entity="Gurusha-personal",
+            name=f"voi_grpo_{Path(args.model_path).name}_{args.steps}steps",
+            config={
+                "model": args.model_path,
+                "steps": args.steps,
+                "node_budget": args.node_budget,
+                "grpo_K": args.grpo_K,
+                "voi_K": args.voi_K,
+                "lr": args.lr,
+                "kl_coeff": args.kl_coeff,
+                "tasks": args.tasks,
+                "lora_r": args.lora_r,
+                "lora_alpha": args.lora_alpha,
+            },
+        )
+
     print(f"[VoI-GRPO] Starting training: {args.steps} steps")
     t0 = time.time()
 
@@ -426,11 +448,75 @@ def train(args):
         ])
         log_file.flush()
 
+        # Compute detailed metrics from the env summary
+        summary = result["summary"]
+        node_scores = [n.get("score") for n in summary.get("tree", []) if n.get("score") is not None and n.get("node_id") != "root"]
+        score_variance = float(np.var(node_scores)) if len(node_scores) >= 2 else 0.0
+
+        # Node type counts
+        node_types = [n.get("type", "") for n in summary.get("tree", []) if n.get("node_id") != "root"]
+        n_explore = node_types.count("explore")
+        n_validate = node_types.count("validate")
+        n_challenge = node_types.count("challenge")
+
+        # Per-hypothesis score variance
+        hyp_scores = {}
+        for n in summary.get("tree", []):
+            hid = n.get("hypothesis")
+            score = n.get("score")
+            if hid and score is not None:
+                hyp_scores.setdefault(hid, []).append(score)
+        per_hyp_variances = [float(np.var(scores)) for scores in hyp_scores.values() if len(scores) >= 2]
+        mean_hyp_variance = float(np.mean(per_hyp_variances)) if per_hyp_variances else 0.0
+
+        # Hypothesis resolution stats
+        thought = summary.get("thought_md", {})
+        hypotheses = thought.get("hypotheses", {})
+        n_rejected = sum(1 for h in hypotheses.values() if h.get("status") == "rejected")
+        n_abandoned = sum(1 for h in hypotheses.values() if h.get("status") == "abandoned")
+
+        # Reward component breakdown
+        rewards_dict = summary.get("rewards", {})
+        r1_values = [r.get("r1", 0) for r in rewards_dict.values()]
+        r2_values = [r.get("r2", 0) for r in rewards_dict.values()]
+        mean_r1 = float(np.mean(r1_values)) if r1_values else 0.0
+        mean_r2 = float(np.mean(r2_values)) if r2_values else 0.0
+
+        if use_wandb:
+            log_dict = {
+                # Core training
+                "train/loss": result["mean_loss"],
+                "train/mean_reward": result["mean_reward"],
+                "train/reward_r1": mean_r1,
+                "train/reward_r2": mean_r2,
+                "train/best_score": result["best_score"],
+                "train/improvement": result["improvement"],
+                # Exploration signals
+                "exploration/score_variance": score_variance,
+                "exploration/per_hypothesis_variance": mean_hyp_variance,
+                "exploration/n_hypotheses": result["n_hypotheses"],
+                "exploration/n_validated": result["n_validated"],
+                "exploration/n_rejected": n_rejected,
+                "exploration/n_abandoned": n_abandoned,
+                "exploration/validation_rate": result["n_validated"] / max(result["n_hypotheses"], 1),
+                # Node type distribution
+                "nodes/explore": n_explore,
+                "nodes/validate": n_validate,
+                "nodes/challenge": n_challenge,
+                "nodes/explore_ratio": n_explore / max(len(node_types), 1),
+                # Per-task (conditional)
+                f"task/{task_cfg['task_name'][:20]}/improvement": result["improvement"],
+                f"task/{task_cfg['task_name'][:20]}/best_score": result["best_score"],
+            }
+            wandb.log(log_dict, step=step)
+
         if step % args.log_every == 0:
             print(f"[step {step}/{args.steps}] task={task_cfg['task_name'][:20]} "
                   f"loss={result['mean_loss']:.4f} reward={result['mean_reward']:.4f} "
                   f"best={result['best_score']:.4f} hyp={result['n_hypotheses']} "
-                  f"val={result['n_validated']} ({elapsed:.0f}s)")
+                  f"val={result['n_validated']} rej={n_rejected} "
+                  f"score_var={score_variance:.4f} explore={n_explore} validate={n_validate} "
+                  f"({elapsed:.0f}s)")
 
         if step % args.save_every == 0:
             save_dir = output_dir / f"step_{step}"
@@ -446,6 +532,8 @@ def train(args):
     model.save_pretrained(str(final_dir))
     tokenizer.save_pretrained(str(final_dir))
     log_file.close()
+    if use_wandb:
+        wandb.finish()
     print(f"[VoI-GRPO] Training complete. {args.steps} steps in {time.time()-t0:.0f}s")
 
 
@@ -470,6 +558,7 @@ def main():
     parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--save-every", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
     args = parser.parse_args()
 
     random.seed(args.seed)

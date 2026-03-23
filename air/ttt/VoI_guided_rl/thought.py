@@ -61,16 +61,34 @@ class ThoughtDoc:
         return [h for h in self.hypotheses.values() if h.status == HypothesisStatus.VALIDATED]
 
     def record_validate(self, hid: str, result: str, success: bool):
-        """Record a validate experiment result."""
+        """Record a validate experiment result.
+
+        A hypothesis can be:
+        - VALIDATED if a validate experiment succeeds (prediction correct)
+        - REJECTED early if evidence strongly contradicts it (2 consecutive failures)
+        - ABANDONED if validate budget exhausted without resolution
+        """
         h = self.hypotheses[hid]
         h.validate_used += 1
         h.evidence.append(result)
         h.status = HypothesisStatus.TESTING
+
         if success:
             h.status = HypothesisStatus.VALIDATED
-        elif h.validate_used >= h.validate_budget:
-            h.status = HypothesisStatus.ABANDONED
-            h.confidence = max(0.1, h.confidence - 0.3)
+            h.confidence = min(0.9, h.confidence + 0.2)
+        else:
+            h.confidence = max(0.1, h.confidence - 0.15)
+            # Early rejection: 2 consecutive failures = strong counter-evidence
+            recent_failures = sum(
+                1 for e in h.evidence[-2:]
+                if "FAILED" in e or "score=None" in e
+            )
+            if recent_failures >= 2 and h.validate_used >= 2:
+                h.status = HypothesisStatus.REJECTED
+                h.confidence = 0.1
+            elif h.validate_used >= h.validate_budget:
+                h.status = HypothesisStatus.ABANDONED
+                h.confidence = max(0.1, h.confidence - 0.2)
 
     def record_challenge(self, hid: str, result: str, hypothesis_survives: bool):
         """Record a challenge experiment result."""

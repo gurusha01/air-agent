@@ -280,13 +280,39 @@ class VoIScientistEnv:
 
         # --- Update thought.md ---
         if node_type == "validate" and hypothesis_id in self.thought.hypotheses:
-            success = actual_score is not None and r1 > 0
-            result_text = f"score={actual_score}" if actual_score else "FAILED"
+            # Hypothesis validation is about whether the experiment WORKED
+            # (score improved or matched expected direction), not whether
+            # the exact prediction interval was correct.
+            # R1 rewards sharp predictions separately.
+            if actual_score is None:
+                success = False
+                result_text = "FAILED (execution error)"
+            else:
+                # Did the score improve over baseline? If yes, the hypothesis
+                # direction is supported even if the exact prediction was off.
+                improved = (
+                    (self.higher_is_better and actual_score > self.baseline_score) or
+                    (not self.higher_is_better and actual_score < self.baseline_score)
+                )
+                success = improved
+                result_text = f"score={actual_score:.4f} ({'improved' if improved else 'no improvement'})"
             self.thought.record_validate(hypothesis_id, result_text, success)
 
         elif node_type == "challenge" and hypothesis_id in self.thought.hypotheses:
-            survives = actual_score is not None and r1 == 0  # prediction wrong = hypothesis challenged
-            result_text = f"score={actual_score}" if actual_score else "FAILED"
+            # Challenge succeeds (hypothesis broken) if the experiment shows
+            # the hypothesis doesn't hold in a new condition
+            if actual_score is None:
+                survives = True  # execution failure doesn't count as evidence
+                result_text = "FAILED (execution error, inconclusive)"
+            else:
+                # If the challenger found a case where the hypothesis's approach
+                # does NOT improve, the hypothesis is weakened
+                improved = (
+                    (self.higher_is_better and actual_score > self.baseline_score) or
+                    (not self.higher_is_better and actual_score < self.baseline_score)
+                )
+                survives = improved  # hypothesis survives if its approach still works
+                result_text = f"score={actual_score:.4f} ({'hypothesis holds' if survives else 'hypothesis broken'})"
             self.thought.record_challenge(hypothesis_id, result_text, survives)
 
         if thought_update:

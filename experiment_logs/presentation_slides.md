@@ -153,6 +153,41 @@ LLM-Guided is best on structured tasks. RL remains challenging (executor bottlen
 
 ---
 
+# N20 Scaling Results
+
+**Performance scales strongly with budget (n5 to n20):**
+
+| Task | Method | n5 | n20 | Delta |
+|------|--------|-----|------|-------|
+| Titanic | baseline | 0.827 | **0.945** | +0.118 |
+| Regression | sq_e1 (SFT) | 0.885 | **0.909** | +0.024 |
+| BoS | sq_battle_e3 (SFT) | 1.371 | **~1.433** | +0.062 |
+| BoS | baseline | -- | 1.441 | -- |
+
+**Key finding**: Both SFT and baseline improve substantially at n20. Titanic baseline jumps from 0.827 to 0.945 -- a massive gain from search budget alone.
+
+**Open question**: Does the SFT advantage widen or narrow with more budget? Data collection ongoing.
+
+---
+
+# Task Ceiling Analysis
+
+| Task | Baseline | Our Best | Ceiling | Headroom |
+|------|----------|----------|---------|----------|
+| Battle of Sexes | 1.02 | 1.44 | ~1.5-1.6 | ~10% |
+| Regression | 0.88 | 0.92 | ~0.93 | **~1%** |
+| Titanic | 0.77 | 0.945 | ~0.88-0.90 | **near/past ceiling** |
+| Prisoner's Dilemma | 2.37 | 2.39 | ~2.5 | ~5% |
+| Mountain Car | 33.8 | 68.9 | ~90+ | **~25%** |
+
+**Where to focus:**
+- Regression is solved (1% headroom)
+- Titanic has exceeded our ceiling estimate at n20
+- **Mountain Car has the most room for improvement** -- priority target for RL pipeline
+- Battle of Sexes approaching ceiling but still ~10% headroom
+
+---
+
 # Qualitative Success: Regression Task
 
 **Scientist reasoning on House Price (R^2)**:
@@ -361,33 +396,37 @@ R_node  = 0.4 * R1 + 0.3 * R2    # dense, per-node signal
 R_final = 0.3 * R3                 # sparse, end-of-tree signal
 ```
 
-**Design principles:**
-- All rewards computed **externally** (not from self-reported confidence)
-- Belief estimation via **token logits** (non-gameable)
-- Dense per-node rewards for **tractable credit assignment**
-- Sparse end reward to **ground search in actual performance**
+**Recent VoI reward fixes:**
+- **Validation**: separates "hypothesis is false" from "prediction was wrong" -- checks directional improvement, not interval
+- **Early rejection**: 2 consecutive validate failures --> hypothesis REJECTED (saves budget)
+- **Challenge logic**: hypothesis survives if approach still improves over baseline
+
+**W&B integration**: loss, rewards, exploration signals, node type distributions, per-task curves (project: voi-scientist-rl)
 
 ---
 
 # Next Steps
 
-1. **Implement VoI reward computation**
-   - Logit-based P(H=true) estimation
-   - KL divergence between conditional experiment distributions
-   - Calibration study: validate logit estimates
+1. **Complete n20 evaluation**
+   - Finish data collection across all tasks and methods
+   - Determine if SFT advantage widens or narrows with budget
 
-2. **GRPO training with R1 + R2 + R3 reward**
-   - Phase 1: SFT on good scientist trajectories (prior installation)
-   - Phase 2: GRPO on tree rollouts with hypothesis-driven structure
+2. **GRPO training with updated VoI rewards**
+   - Leverage improved validation/rejection logic
+   - Monitor via W&B dashboards (voi-scientist-rl)
 
-3. **Evaluation**
+3. **RL task pipeline** (highest priority)
+   - Build RL-specific Apptainer container (mlgym_rl.sif)
+   - Mountain Car: ~25% headroom -- most room for improvement
+   - Full comparison: LLM-guided (n5/n20) + SFT + VoI RL + AIRA
+
+4. **Evaluation & ablation**
    - Held-out MLGym tasks (generalization)
    - Ablation: contribution of each reward component
-   - Scaling: does the trained scientist need fewer nodes?
+   - Calibration study for logit-based belief estimates
 
-4. **Scale up**
+5. **Scale up**
    - Larger scientist models (8B, 14B)
-   - More diverse training tasks
    - Transfer to non-MLGym benchmarks
 
 ---
@@ -401,7 +440,9 @@ R_final = 0.3 * R3                 # sparse, end-of-tree signal
 | **Training data** | Task-grounded data >> Claude traces >> templates |
 | **Training scope** | Per-task >> multi-task (multi-task consistently hurts) |
 | **Best results** | +0.046 accuracy on Titanic (p=0.032), +0.031 (p=0.003) |
+| **N20 scaling** | Strong gains with budget: Titanic 0.827->0.945, BoS 1.371->1.433 |
+| **Task ceilings** | Regression near-solved (~1%), Mountain Car has most headroom (~25%) |
 | **Key insight** | SFT teaches *what* to reason about; RL needed to teach *how to allocate budget* |
-| **Next phase** | VoI-guided GRPO training -- reward hypotheses that change experimental strategy |
+| **Next phase** | VoI-guided GRPO with improved rewards + RL task pipeline |
 
 **The central goal**: A scientist that finds better solutions faster, with fewer wasted experiments, by genuinely learning the structure of each problem rather than performing shallow local optimization.
