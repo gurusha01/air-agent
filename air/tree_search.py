@@ -781,7 +781,7 @@ class ContainerManager:
                 image_name=self.image_name,
                 max_steps=99999,
                 task_config_path=self.task_config,
-                container_type="docker",
+                container_type=os.environ.get("MLGYM_CONTAINER_TYPE", "apptainer"),
                 verbose=False,
             )
             self.env = MLGymEnv(args=env_args, devices=[self.env_gpu])
