@@ -19,31 +19,31 @@ All experiments: Qwen3-4B + LoRA (r=16), per-task SFT v3 epoch3 checkpoints, K=4
 
 ---
 
-## Quantitative Results (at ~28 steps)
+## Quantitative Results (at ~50 steps, updated 21:45 MDT)
 
-| Experiment | Steps | R>0 Rate | Grad Rate | Reward Trend (Q1→Q4) | Learning? |
-|-----------|-------|----------|-----------|---------------------|-----------|
-| **titan_simple** | 28 | **86%** | **86%** | 0.65 → 0.65 → 0.38 → 0.38 | Declining after initial signal |
-| regr_simple | 29 | 52% | 55% | 0.01 → 0.01 → 0.03 → 0.01 | Flat |
-| bos_simple | 24 | 25% | 29% | 0.09 → 0.08 → 0.01 → 0.01 | Declining |
-| **titan_tiered** | 29 | **86%** | 21% | 0.68 → 0.64 → 0.97 → 0.86 | **Increasing** |
-| bos_tiered | 29 | 38% | 24% | 0.43 → 0.15 → 0.00 → 0.55 | Volatile |
-| regr_tiered | 28 | 50% | 32% | 0.06 → 0.11 → 0.29 → 0.06 | Flat |
-| titan_voi | 24 | 21% | 42% | 0.02 → 0.02 → 0.00 → 0.07 | Slight increase |
-| bos_voi | 25 | 4% | 8% | 0.03 → 0.00 → 0.00 → 0.00 | No signal |
-| regr_voi | 25 | 12% | 32% | 0.02 → 0.00 → 0.00 → 0.03 | Marginal |
+| Experiment | Steps | R>0 Rate | Grad Rate | 5-Bucket Trend | Learning? |
+|-----------|-------|----------|-----------|----------------|-----------|
+| **titan_simple** | 52 | **83%** | **83%** | 0.67 → 0.50 → 0.30 → 0.69 → 0.49 | Degrading (overfit to keywords) |
+| regr_simple | 54 | 65% | 67% | 0.01 → 0.02 → 0.01 → 0.02 → 0.01 | Stable (low signal) |
+| bos_simple | 49 | 37% | 53% | 0.12 → 0.01 → 0.04 → 0.09 → 0.01 | Degrading |
+| titan_tiered | 54 | 83% | 24% | 0.69 → 0.82 → 0.83 → 0.80 → 0.68 | Stable (high reward) |
+| bos_tiered | 55 | 45% | 45% | 0.30 → 0.07 → 0.56 → 0.18 → 0.31 | Volatile |
+| **regr_tiered** | 53 | 62% | 32% | **0.10 → 0.17 → 0.13 → 0.19 → 0.16** | **LEARNING ↑** |
+| titan_voi | 50 | 12% | 28% | 0.02 → 0.03 → 0.01 → 0.00 → 0.01 | Degrading |
+| bos_voi | 51 | 4% | 10% | 0.02 → 0.00 → 0.00 → 0.00 → 0.01 | No signal |
+| regr_voi | 50 | 16% | 44% | 0.01 → 0.01 → 0.04 → 0.01 → 0.01 | Stable (low signal) |
 
-### Key Finding: Simple reward has highest gradient rate, but reward is declining
+### Key Finding 1: Simple reward has highest gradient rate, but rewards degrade
 
-The simple reward produces the most gradient updates (86% for Titan) because continuous rewards create variance across K=4 proposals. However, the reward is declining in Q3-Q4, suggesting:
+The simple reward produces the most gradient updates (83% for Titan) because continuous rewards create variance across K=4 proposals. However, rewards decline over training — the model learns keyword patterns that match historical trees but this doesn't generalize. The policy drifts from SFT quality.
 
-1. The model is being pulled away from SFT-quality proposals by the gradient signal
-2. The reward is based on keyword matching to historical trees, which is noisy
-3. The KL penalty (0.1) may not be strong enough to prevent drift
+### Key Finding 2: Tiered reward is more stable but gradient-sparse
 
-### Tiered reward has lower gradient rate but more stable learning
+Tiered shows high reward rates but low gradient rates (24% for Titan). All 4 proposals often land in the same tier → zero advantage → no gradient. When gradients do occur, they're stronger signals.
 
-Tiered shows increasing reward on Titan despite fewer gradient steps. The discrete rewards (0, 0.2, 1.0) only produce gradient when proposals land in different tiers, which is a stronger but rarer signal.
+### Key Finding 3: Only regr_tiered shows clear learning
+
+Regression with tiered reward is the only experiment where reward consistently increases (0.10 → 0.19). This may be because regression has the most structured score landscape — small improvements are reliably in the 0.2 tier, large improvements in the 1.0 tier.
 
 ---
 
