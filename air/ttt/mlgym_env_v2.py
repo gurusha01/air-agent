@@ -175,117 +175,258 @@ def _log_reward(scheme: str, reward: float, best, baseline, any_score, state, ex
         f.write(json.dumps(entry) + "\n")
 
 
-def discrete_reward_v2(parser, completion, answer, state, **kwargs) -> float:
-    """Scheme C (original, v6): +1 any score above moving best_so_far, +0.2 unused (binary here),
-    0 below baseline, -0.5 fault. Used by v6 config.
-    NOTE: this is the v6-style binary version — kept for backwards compatibility."""
-    best = state.get("best_score")
-    baseline = state.get("baseline_score", 0)
+# ---------------------------------------------------------------------------
+# Reward schemes — canonical spec
+# ---------------------------------------------------------------------------
+#
+# For every scheme, s is the single valid executor score for an episode
+# (None ⇔ executor fault). Only "higher is better" tasks shown here; the
+# env flips sign for lower-is-better by negating s and b and the thresholds
+# before calling these.
+#
+#   v6_binary        : {-0.5 fault, 0 s<=b, +1 s>b}
+#   v7_fixed_tier    : {-0.5 fault, 0 s<b,  +0.2 b<=s<=tau, +1 s>tau}   tau=0.88
+#   v8_global_best   : {-0.5, 0 s<=b, +0.2 b<s<best_ever, +1 s>=best_ever}
+#                      best_ever starts at b, monotonically grows, end-of-step
+#                      snapshot semantics (all rollouts in a step see the
+#                      snapshot taken at step-start). Persisted to disk.
+#   v9_percentile    : {-0.5, 0 s<=b, +0.2 b<s<=p_t, +1 s>p_t}
+#                      p_t = percentile_q(window)  (window = last N valid scores)
+#                      p_t = b if |window| < warmup.
+#                      Defaults: N=64, q=70, warmup=8. End-of-step snapshot
+#                      semantics. Persisted to disk.
+# ---------------------------------------------------------------------------
+
+REWARD_STATE_DIR = Path("/scratch/jarnav/rollout_logs")
+
+
+def _episode_score(state) -> tuple[float | None, bool]:
+    """Return (raw_score, higher_is_better) for the current episode's single proposal.
+    Raw score is None on executor fault / no-score. We read from the last tree
+    entry rather than state['best_score'] because the latter is clipped at
+    baseline. The first element (root) is excluded."""
     higher = state.get("higher_is_better", True)
     any_score = state.get("any_score_achieved", False)
-
     if not any_score:
-        reward = -0.5
-    elif higher:
-        reward = 1.0 if best > baseline else 0.0
+        return None, higher
+    tree = state.get("tree", [])
+    # Find the highest-index non-root node that has a numeric score.
+    for node in reversed(tree):
+        if node.get("id") == "root":
+            continue
+        s = node.get("score")
+        if s is not None:
+            return float(s), higher
+    return None, higher
+
+
+# -- v6 (stateless, binary) --------------------------------------------------
+
+def reward_v6_binary(parser, completion, answer, state, **kwargs) -> float:
+    s, higher = _episode_score(state)
+    b = state.get("baseline_score", 0)
+    if s is None:
+        r = -0.5
+    elif (higher and s > b) or ((not higher) and s < b):
+        r = 1.0
     else:
-        reward = 1.0 if best < baseline else 0.0
+        r = 0.0
+    _log_reward("v6_binary", r, s, b, s is not None, state)
+    return r
 
-    _log_reward("v6_moving_best", reward, best, baseline, any_score, state)
-    return reward
+
+# Backwards-compat alias for old config files still referencing discrete_reward_v2.
+discrete_reward_v2 = reward_v6_binary
 
 
-# ---------------------------------------------------------------------------
-# Scheme A (v7): fixed absolute tiers, no moving baseline.
-#   -0.5  executor fault (no score)
-#    0.0  score < baseline
-#   +0.2  baseline <= score <= 0.9
-#   +1.0  score > 0.9
-# ---------------------------------------------------------------------------
-FIXED_TIER_HIGH = 0.9  # absolute threshold for +1 reward on FashionMNIST
+# -- v7 (stateless, fixed-tier, tau=0.88) ------------------------------------
 
-def discrete_reward_v7_fixed_tier(parser, completion, answer, state, **kwargs) -> float:
-    best = state.get("best_score")
-    baseline = state.get("baseline_score", 0)
-    higher = state.get("higher_is_better", True)
-    any_score = state.get("any_score_achieved", False)
+V7_TAU = 0.88
 
-    if not any_score or best is None:
-        reward = -0.5
+def reward_v7_fixed_tier(parser, completion, answer, state, **kwargs) -> float:
+    s, higher = _episode_score(state)
+    b = state.get("baseline_score", 0)
+    if s is None:
+        r = -0.5
     elif higher:
-        if best > FIXED_TIER_HIGH:
-            reward = 1.0
-        elif best >= baseline:
-            reward = 0.2
-        else:
-            reward = 0.0
+        if s < b:           r = 0.0
+        elif s <= V7_TAU:   r = 0.2
+        else:               r = 1.0
     else:
-        # lower-is-better: flip comparisons. "high tier" means below (1 - FIXED_TIER_HIGH).
-        low_thr = 1.0 - FIXED_TIER_HIGH
-        if best < low_thr:
-            reward = 1.0
-        elif best <= baseline:
-            reward = 0.2
+        tau_lo = 1.0 - V7_TAU
+        if s > b:           r = 0.0
+        elif s >= tau_lo:   r = 0.2
+        else:               r = 1.0
+    _log_reward("v7_fixed_tier", r, s, b, s is not None, state, extra={"tau": V7_TAU})
+    return r
+
+
+# Legacy alias (old configs reference this name)
+discrete_reward_v7_fixed_tier = reward_v7_fixed_tier
+
+
+# -- v8 (stateful global best_ever, end-of-step snapshot, persistent) --------
+
+class RewardV8GlobalBest:
+    """Reward with a monotonically growing best_ever threshold.
+
+    End-of-step snapshot semantics: within a training step of batch_size
+    rollouts, all rollouts are scored against the best_ever that was
+    committed at the previous step boundary. After all batch_size rollouts
+    in the step have been scored, best_ever is updated to
+    max(best_ever, max of this step's valid scores).
+    """
+
+    def __init__(self, b: float, batch_size: int, task: str, persist_path: Path | None = None):
+        self.b = float(b)
+        self.batch_size = int(batch_size)
+        self.task = task
+        self.best_ever = float(b)
+        self._pending: list[float] = []
+        self._counter = 0
+        self.persist_path = persist_path or (REWARD_STATE_DIR / f"reward_state_v8_{task}.json")
+        self._load()
+
+    def _load(self):
+        try:
+            if self.persist_path.exists():
+                with open(self.persist_path) as f:
+                    d = json.load(f)
+                self.best_ever = float(d.get("best_ever", self.b))
+                logger.info(f"[v8] loaded best_ever={self.best_ever:.4f} from {self.persist_path}")
+        except Exception as e:
+            logger.warning(f"[v8] could not load state: {e}")
+
+    def _save(self):
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.persist_path, "w") as f:
+                json.dump({"best_ever": self.best_ever, "baseline": self.b}, f)
+        except Exception as e:
+            logger.warning(f"[v8] could not save state: {e}")
+
+    def __call__(self, parser, completion, answer, state, **kwargs) -> float:
+        s, higher = _episode_score(state)
+        b = state.get("baseline_score", self.b)
+
+        # Compute against the committed snapshot.
+        if s is None:
+            r = -0.5
+        elif higher:
+            if s <= b:                     r = 0.0
+            elif s < self.best_ever:       r = 0.2
+            else:                          r = 1.0   # s >= best_ever
         else:
-            reward = 0.0
+            if s >= b:                     r = 0.0
+            elif s > self.best_ever:       r = 0.2   # note: for lower-is-better, "best" is the min; < is "better than"
+            else:                          r = 1.0
 
-    _log_reward("v7_fixed_tier", reward, best, baseline, any_score, state,
-                extra={"fixed_tier_high": FIXED_TIER_HIGH})
-    return reward
+        # Buffer this score; commit at end of step.
+        if s is not None:
+            self._pending.append(s)
+        self._counter += 1
+        if self._counter >= self.batch_size:
+            if self._pending:
+                if higher:
+                    self.best_ever = max(self.best_ever, max(self._pending))
+                else:
+                    self.best_ever = min(self.best_ever, min(self._pending))
+            self._pending = []
+            self._counter = 0
+            self._save()
+
+        _log_reward("v8_global_best", r, s, b, s is not None, state,
+                    extra={"best_ever_snapshot": self.best_ever,
+                           "pending_in_batch": len(self._pending)})
+        return r
 
 
-# ---------------------------------------------------------------------------
-# Scheme B (v8): percentile-moving best.
-#   Keep a rolling deque of the last N scores; "best" = 70th percentile.
-#   -0.5  executor fault
-#    0.0  score <= baseline (but ran fine)
-#   +0.2  baseline < score <= p70(recent)
-#   +1.0  score > p70(recent)
-# ---------------------------------------------------------------------------
-PERCENTILE_WINDOW = 500
-PERCENTILE_Q = 70
-_recent_scores: deque[float] = deque(maxlen=PERCENTILE_WINDOW)
+# -- v9 (stateful percentile, end-of-step snapshot, persistent) --------------
 
-def _percentile_best(baseline: float, higher: bool) -> float:
-    if len(_recent_scores) < 8:
-        return baseline  # not enough history; fall back to baseline as the +1 threshold
-    import numpy as np
-    q = PERCENTILE_Q if higher else (100 - PERCENTILE_Q)
-    return float(np.percentile(list(_recent_scores), q))
+class RewardV9Percentile:
+    """Reward with a p_q threshold over a rolling window of recent valid scores.
 
-def discrete_reward_v8_percentile(parser, completion, answer, state, **kwargs) -> float:
-    best = state.get("best_score")
-    baseline = state.get("baseline_score", 0)
-    higher = state.get("higher_is_better", True)
-    any_score = state.get("any_score_achieved", False)
+    End-of-step snapshot semantics: all rollouts within a step are scored
+    against the window frozen at step-start. After the step is complete,
+    the window is extended with this step's valid scores (FIFO, cap N).
+    """
 
-    pct_best = _percentile_best(baseline, higher)
+    def __init__(self, b: float, N: int, q: int, warmup: int, batch_size: int,
+                 task: str, persist_path: Path | None = None):
+        self.b = float(b)
+        self.N = int(N)
+        self.q = int(q)
+        self.warmup = int(warmup)
+        self.batch_size = int(batch_size)
+        self.task = task
+        self.window: deque[float] = deque(maxlen=self.N)
+        self._pending: list[float] = []
+        self._counter = 0
+        self._cached_p: float | None = None
+        self.persist_path = persist_path or (REWARD_STATE_DIR / f"reward_state_v9_{task}.json")
+        self._load()
+        self._recompute_threshold()
 
-    if not any_score or best is None:
-        reward = -0.5
-    elif higher:
-        if best > pct_best:
-            reward = 1.0
-        elif best > baseline:
-            reward = 0.2
+    def _recompute_threshold(self):
+        if len(self.window) < self.warmup:
+            self._cached_p = self.b
         else:
-            reward = 0.0
-    else:
-        if best < pct_best:
-            reward = 1.0
-        elif best < baseline:
-            reward = 0.2
+            import numpy as np
+            self._cached_p = float(np.percentile(list(self.window), self.q))
+
+    def _load(self):
+        try:
+            if self.persist_path.exists():
+                with open(self.persist_path) as f:
+                    d = json.load(f)
+                w = d.get("window", [])
+                self.window = deque([float(x) for x in w[-self.N:]], maxlen=self.N)
+                logger.info(f"[v9] loaded window of {len(self.window)} scores from {self.persist_path}")
+        except Exception as e:
+            logger.warning(f"[v9] could not load state: {e}")
+
+    def _save(self):
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.persist_path, "w") as f:
+                json.dump({"window": list(self.window), "baseline": self.b,
+                           "N": self.N, "q": self.q, "warmup": self.warmup}, f)
+        except Exception as e:
+            logger.warning(f"[v9] could not save state: {e}")
+
+    def __call__(self, parser, completion, answer, state, **kwargs) -> float:
+        s, higher = _episode_score(state)
+        b = state.get("baseline_score", self.b)
+        p = self._cached_p if self._cached_p is not None else self.b
+
+        if s is None:
+            r = -0.5
+        elif higher:
+            if s <= b:          r = 0.0
+            elif s <= p:        r = 0.2
+            else:               r = 1.0
         else:
-            reward = 0.0
+            # lower-is-better: "above p" means "s < p_lowertail"; use (100-q) percentile
+            if s >= b:          r = 0.0
+            elif s >= p:        r = 0.2
+            else:               r = 1.0
 
-    # Update rolling window ONLY with valid numeric scores, after computing reward
-    # so the current score doesn't self-reference.
-    if any_score and best is not None:
-        _recent_scores.append(float(best))
+        if s is not None:
+            self._pending.append(s)
+        self._counter += 1
+        if self._counter >= self.batch_size:
+            for ps in self._pending:
+                self.window.append(ps)
+            self._pending = []
+            self._counter = 0
+            self._recompute_threshold()
+            self._save()
 
-    _log_reward("v8_percentile", reward, best, baseline, any_score, state,
-                extra={"pct_best": pct_best, "window_size": len(_recent_scores)})
-    return reward
+        _log_reward("v9_percentile", r, s, b, s is not None, state,
+                    extra={"p_threshold_snapshot": p,
+                           "window_size": len(self.window),
+                           "pending_in_batch": len(self._pending)})
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +450,8 @@ class MLGymTreeEnvV2(vf.MultiTurnEnv):
         system_prompt: str | None = None,
         parser: vf.Parser | None = None,
         rubric: vf.Rubric | None = None,
-        reward_scheme: str = "v6_moving_best",
+        reward_scheme: str = "v6_binary",
+        reward_batch_size: int = 8,
         **kwargs,
     ):
         self.task_name = task_name or task
@@ -348,19 +490,52 @@ class MLGymTreeEnvV2(vf.MultiTurnEnv):
         # Parser extracts DIRECTION from freeform text
         parser = parser or vf.XMLParser(fields=["proposal"], answer_field="proposal")
 
-        # Select reward function based on reward_scheme
-        reward_fn_map = {
-            "v6_moving_best": discrete_reward_v2,
-            "v7_fixed_tier": discrete_reward_v7_fixed_tier,
-            "v8_percentile": discrete_reward_v8_percentile,
-        }
-        if reward_scheme not in reward_fn_map:
-            raise ValueError(f"Unknown reward_scheme={reward_scheme}. Options: {list(reward_fn_map)}")
+        # Select reward function based on reward_scheme.
+        # Stateless schemes use plain functions; stateful schemes instantiate a
+        # class tied to this env instance so state persists across rollouts.
         self.reward_scheme = reward_scheme
-        logger.info(f"Using reward scheme: {reward_scheme}")
+        self.reward_batch_size = reward_batch_size
+        logger.info(f"Using reward scheme: {reward_scheme} (batch_size={reward_batch_size})")
+
+        if reward_scheme in ("v6_binary", "v6_moving_best"):
+            reward_callable = reward_v6_binary
+            self._reward_obj = None
+        elif reward_scheme == "v7_fixed_tier":
+            reward_callable = reward_v7_fixed_tier
+            self._reward_obj = None
+        elif reward_scheme == "v8_global_best":
+            self._reward_obj = RewardV8GlobalBest(
+                b=self._baseline_score,
+                batch_size=reward_batch_size,
+                task=self.task_name,
+            )
+            reward_callable = self._reward_obj
+        elif reward_scheme == "v9_percentile":
+            self._reward_obj = RewardV9Percentile(
+                b=self._baseline_score,
+                N=64, q=70, warmup=8,
+                batch_size=reward_batch_size,
+                task=self.task_name,
+            )
+            reward_callable = self._reward_obj
+        elif reward_scheme == "v8_percentile":
+            # Legacy alias for old v8 percentile-based scheme → map to v9.
+            logger.warning("reward_scheme='v8_percentile' is deprecated; use 'v9_percentile'")
+            self._reward_obj = RewardV9Percentile(
+                b=self._baseline_score,
+                N=64, q=70, warmup=8,
+                batch_size=reward_batch_size,
+                task=self.task_name,
+            )
+            reward_callable = self._reward_obj
+        else:
+            raise ValueError(
+                f"Unknown reward_scheme={reward_scheme}. "
+                "Options: v6_binary, v7_fixed_tier, v8_global_best, v9_percentile"
+            )
 
         rubric = rubric or vf.Rubric(parser=parser)
-        rubric.add_reward_func(reward_fn_map[reward_scheme], weight=1.0)
+        rubric.add_reward_func(reward_callable, weight=1.0)
 
         dataset = self._build_dataset(num_train_examples)
         eval_dataset = self._build_dataset(num_eval_examples) if num_eval_examples > 0 else None

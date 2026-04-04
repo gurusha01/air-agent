@@ -1,7 +1,9 @@
-# RL v8: FashionMNIST — global monotonic best_ever reward
-#   best_ever starts at baseline, grows with new maxes, snapshot-per-step.
-#   -0.5 fault / 0 if s<=b / +0.2 if b<s<best_ever / +1 if s>=best_ever
-#   Persisted to /scratch/jarnav/rollout_logs/reward_state_v8_fashionMnist.json
+# RL v9: FashionMNIST — percentile moving-best reward
+#   p_t = 70th percentile of last N=64 valid scores (rolling window)
+#   p_t = baseline during warmup (<8 samples)
+#   -0.5 fault / 0 if s<=b / +0.2 if b<s<=p_t / +1 if s>p_t
+#   End-of-step snapshot semantics. Persisted to
+#   /scratch/jarnav/rollout_logs/reward_state_v9_fashionMnist.json
 max_steps = 50
 seq_len = 8192
 
@@ -16,7 +18,7 @@ enforce_eager = true
 
 [wandb]
 project = "mlgym-scientist-rl"
-name = "fmnist_v8_global_best"
+name = "fmnist_v9_percentile"
 
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
@@ -39,7 +41,7 @@ max_tokens = 1024
 [[orchestrator.env]]
 id = "mlgym_tree_env_v2"
 name = "mlgym_fmnist"
-args = { task = "fashionMnist", node_budget = 2, executor_url = "https://api.anthropic.com/v1/", executor_model = "claude-sonnet-4-20250514", max_actions = 15, num_train_examples = 100, num_eval_examples = 10, reward_scheme = "v8_global_best", reward_batch_size = 8 }
+args = { task = "fashionMnist", node_budget = 2, executor_url = "https://api.anthropic.com/v1/", executor_model = "claude-sonnet-4-20250514", max_actions = 15, num_train_examples = 100, num_eval_examples = 10, reward_scheme = "v9_percentile", reward_batch_size = 8 }
 
 [trainer.model.lora]
 rank = 32
