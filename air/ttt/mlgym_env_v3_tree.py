@@ -212,6 +212,24 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
         # Force tree-aware system prompt even if caller didn't specify.
         kwargs["system_prompt"] = TREE_SYSTEM_PROMPT
         super().__init__(*args, **kwargs)
+
+        # CRITICAL OFF-BY-ONE FIX: verifiers' MultiTurnEnv runs a loop like:
+        #   while not is_completed(state):
+        #       prompt = get_prompt_messages(state)  # env_response runs HERE
+        #       response = model.generate(prompt)
+        #       trajectory.append(response)
+        # env_response executes the container and adds a tree node, but it
+        # runs INSIDE get_prompt_messages (between turns). The loop's
+        # max_turns_reached check uses len(trajectory) >= max_turns. With
+        # max_turns = node_budget, only (node_budget - 1) env_responses
+        # fire before the loop terminates, so only (node_budget - 1) nodes
+        # get added. We need max_turns = node_budget + 1 so the trajectory
+        # can reach one more step, giving env_response a chance to run
+        # node_budget times and set final_env_response for clean termination.
+        self.max_turns = self.node_budget + 1
+        logger.info(f"[tree v3] max_turns overridden to {self.max_turns} "
+                    f"(node_budget={self.node_budget} + 1 for K executions)")
+
         # Rebuild dataset with tree-aware initial prompt. The super().__init__
         # already built one using v2's INITIAL_PROMPT; we rebuild here.
         from datasets import Dataset
