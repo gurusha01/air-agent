@@ -277,6 +277,12 @@ class RewardV8GlobalBest:
     max(best_ever, max of this step's valid scores).
     """
 
+    # PRIME-RL/verifiers inspects reward_fn.__name__ for logging/tracking.
+    # Plain functions have this, but class instances don't by default —
+    # without this, every rollout is marked "Rollout failed: AttributeError".
+    __name__ = "reward_v8_global_best"
+    __qualname__ = "reward_v8_global_best"
+
     def __init__(self, b: float, batch_size: int, task: str, persist_path: Path | None = None):
         self.b = float(b)
         self.batch_size = int(batch_size)
@@ -350,6 +356,10 @@ class RewardV9Percentile:
     against the window frozen at step-start. After the step is complete,
     the window is extended with this step's valid scores (FIFO, cap N).
     """
+
+    # See note on RewardV8GlobalBest.__name__.
+    __name__ = "reward_v9_percentile"
+    __qualname__ = "reward_v9_percentile"
 
     def __init__(self, b: float, N: int, q: int, warmup: int, batch_size: int,
                  task: str, persist_path: Path | None = None):
