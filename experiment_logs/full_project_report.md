@@ -1454,3 +1454,196 @@ def compute_tree_rewards(
 3. **R3 (Performance)** is normalized improvement over baseline: `(best - baseline) / |baseline|`. Applied once at the end of the entire tree, discounted backward so that later nodes (which had more information to work with) get more R3 credit than early nodes.
 
 4. **Default weights**: alpha=0.4 (resolution), beta=0.3 (information), gamma=0.3 (performance). The dense per-node rewards (R1+R2) receive 70% of the total weight, providing strong credit assignment signal. The sparse end-of-tree R3 receives 30%, ensuring the scientist stays grounded in actually solving the problem.
+
+---
+
+## 8. PRIME-RL: Multi-Turn Tree Search RL (v6)
+
+### 8.1 Motivation
+
+All previous RL attempts (v1-v5) used **single-step training**: the model generates one proposal, it gets executed, and the model receives a reward. But at evaluation time, the model operates in a **multi-turn tree search** — it sees the full tree state, proposes experiments, observes results, and proposes again for multiple nodes.
+
+Qualitative analysis of v5 (real-execution GRPO) revealed five concrete failure modes:
+1. **Train/eval task mismatch**: trained for "What's a good ML idea?" but evaluated on "Given this search tree state, what should we try next?"
+2. **Higher execution failure rate**: GRPO model produced 56% null scores vs 16% for baseline on Titanic
+3. **Fix-chain trapping**: without multi-step training, the model couldn't pivot when approaches failed — got stuck in depth-4 linear chains
+4. **256-token truncation**: all training completions hit the hard cap, incompatible with the structured scientist output format
+5. **Minimal policy change**: KL stayed at ~0.001 throughout, LoRA barely changed the base model
+
+The solution: train the scientist in the **same multi-turn tree search setting** it will be evaluated in.
+
+### 8.2 Setup: PRIME-RL + MLGym Environment
+
+We integrated [PRIME-RL](https://github.com/PrimeIntellect-ai/prime-rl) (PrimeIntellect's open-source RL framework built on the `verifiers` library) with our MLGym tree search environment.
+
+**Architecture (3 GPUs):**
+- GPU 0: Scientist vLLM (port 8000) — serves the scientist model for rollouts
+- GPU 1: PRIME-RL trainer — LoRA updates on the policy
+- GPU 2: Executor vLLM (port 9001) — serves the executor model for MLGym containers
+
+**Environment (`MLGymTreeSearchEnv`):** A `verifiers.MultiTurnEnv` that wraps our LLM-guided tree search. Each rollout is a complete tree search: the scientist sees tree state → proposes experiment → executor runs in MLGym container → scientist observes results → repeat for `node_budget` turns.
+
+**Key challenge:** PRIME-RL's inference server (vLLM) couldn't use `--enable-lora` or `torch.compile` on our cluster due to missing `python3.12-dev` headers. We worked around this by running the inference server externally with `TORCH_COMPILE_DISABLE=1` and disabling dynamic LoRA loading. This means training was **off-policy** — the inference model always served the base weights while the trainer updated its LoRA adapter.
+
+### 8.3 Training Configuration
+
+```toml
+max_steps = 30
+seq_len = 8192
+model = "Qwen/Qwen3-4B-Instruct-2507"
+batch_size = 8
+rollouts_per_example = 2
+lr = 5e-6
+lora_rank = 16, alpha = 32
+node_budget = 5 (turns per rollout)
+```
+
+### 8.4 Results
+
+#### Full Comparison Table
+
+| Task | Baseline | AIRA | LLM Guided | +SFT | +SFT+RL (bandit) | **+RL** | +SFT+RL |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Titanic** | 0.766 | 0.855 | 0.885 | 0.873 | 0.878 | **0.896** | 0.865 |
+| **BoS** | 1.023 | 1.138 | 1.293 | 1.371 | 1.159 | **1.358** | — |
+| **Regression** | 0.880 | 0.901 | 0.888 | 0.892 | 0.885 | 0.884 | — |
+
+- **Baseline**: MLGym starter code, no model
+- **AIRA**: MCTS with Qwen3-4B executor, 5 iterations
+- **LLM Guided**: Qwen3-4B-Instruct as scientist in tree search
+- **+SFT**: Counterfactual SFT fine-tuned scientist
+- **+SFT+RL (bandit)**: Single-step GRPO on top of SFT (no tree structure during training)
+- **+RL**: PRIME-RL multi-turn tree search from base Instruct (THIS WORK)
+- **+SFT+RL**: PRIME-RL from SFT model
+
+#### Training Reward Trajectories
+
+**Titanic (LLM Guided + RL):** Mean reward 0.34 → 0.37 → 0.47 (trending up). 30 steps in 3h21m.
+
+**BoS (LLM Guided + RL):** Mean reward 0.94 → 0.95 → 0.87 (slight decline due to off-policy). 30 steps. Best single-step reward: 1.156.
+
+**Regression (LLM Guided + RL):** Mean reward near zero throughout (-0.025). Task too tight (0.88-0.89 range) for RL to find signal.
+
+### 8.5 Why SFT+RL Underperforms Direct RL
+
+The SFT+RL model (0.865) scored worse than both direct RL (0.896) and even untrained LLM Guided (0.885). Investigation revealed:
+
+1. **SFT collapses entropy**: SFT model entropy ~0.21 vs base Instruct ~0.31 (33% lower). The SFT model is more "peaky," exploring less diverse strategies during tree search.
+2. **SFT itself hurts tree search**: SFT baseline scores 0.837 vs base Instruct baseline 0.854. SFT over-specialized the model for single proposals, degrading multi-step reasoning.
+3. **RL helps but can't recover**: SFT+RL improves SFT from 0.837 to 0.865 (+0.028), but starts from a worse position than direct RL.
+
+**Conclusion:** SFT is counterproductive for tree-structured RL. Starting from base Instruct preserves exploration capacity.
+
+### 8.6 Off-Policy Limitation
+
+Due to cluster constraints (vLLM can't dynamically load LoRA adapters), all PRIME-RL runs were off-policy — the inference model served base weights throughout while the trainer updated its LoRA adapter. This caused:
+- Declining BoS rewards in late training (0.94 → 0.87)
+- The policy diverging from the rollout distribution
+
+On-policy training (with periodic vLLM restarts or dynamic LoRA loading) should yield even stronger results.
+
+### 8.7 Wandb
+
+- Titanic: https://wandb.ai/Gurusha-personal/mlgym-scientist-rl/runs/cou9elpu
+- BoS orchestrator: https://wandb.ai/Gurusha-personal/mlgym-scientist-rl (run q1wyt34v)
+
+---
+
+## 9. FashionMNIST Reward Scheme Comparison (April 2026)
+
+### 9.1 Setup
+
+Switched to FashionMNIST (image classification, 10 classes, baseline accuracy = 0.8478) as a harder task with more headroom for RL improvement. Used Qwen3-4B-Instruct as scientist + Claude Sonnet 4 as executor in Apptainer containers. LoRA rank 32, alpha 64, lr 5e-5, KL tau 0.01.
+
+All runs: 8h wall time on L40S GPUs, batch_size=8, rollouts_per_example=8, 1 proposal per episode (linear/single-shot mode).
+
+### 9.2 Reward Schemes
+
+Four reward functions were tested, all computing a single scalar from `best_score = max(scores in episode tree)`:
+
+**v6 — Binary (stateless)**
+```
+r(s) = -0.5   if s = FAIL
+     =  0.0   if s ≤ baseline (0.8478)
+     = +1.0   if s > baseline
+```
+
+**v7 — Fixed tier τ=0.88 (stateless)**
+```
+r(s) = -0.5   if s = FAIL
+     =  0.0   if s < baseline
+     = +0.2   if baseline ≤ s ≤ 0.88
+     = +1.0   if s > 0.88
+```
+
+**v8 — Global monotone best_ever (stateful)**
+```
+best_ever starts at baseline, grows monotonically.
+End-of-step snapshot: all 8 rollouts in a step see the same best_ever.
+r(s) = -0.5   if s = FAIL
+     =  0.0   if s ≤ baseline
+     = +0.2   if baseline < s < best_ever
+     = +1.0   if s ≥ best_ever
+```
+Persisted to disk for crash recovery.
+
+**v9 — Percentile rolling window (stateful)**
+```
+Window of last N=64 valid scores. Threshold p = percentile_70(window).
+p = baseline during warmup (< 8 samples).
+End-of-step snapshot semantics.
+r(s) = -0.5   if s = FAIL
+     =  0.0   if s ≤ baseline
+     = +0.2   if baseline < s ≤ p
+     = +1.0   if s > p
+```
+
+### 9.3 Results
+
+| Scheme | Steps | Max score | Mean reward (last 10) | Success rate | Fault rate |
+|---|---|---|---|---|---|
+| v6 binary | 43 | **0.9113** | +0.15 | 38% | 18% |
+| v7 fixed τ=0.88 | 39 | **0.9187** | -0.10 | 39% | 27% |
+| v8 global best | 42 | **0.9116** | +0.00 | 39% | 17% |
+| v9 percentile | 43 | **0.8825** | +0.15 | 39% | 13% |
+
+Strategy distribution was identical across all schemes: ~45% CNN, ~32% MLP, ~9% FeatureEng, ~4% XGBoost, rest other. Reward shaping did not broaden exploration.
+
+### 9.4 Analysis
+
+1. **No clear winner.** All schemes achieve similar peaks (0.88-0.92) and similar success rates (~39%). The reward function is not the bottleneck.
+
+2. **v8 froze early.** best_ever ratcheted to 0.8677 by step 10 and stayed there, making the +1 tier effectively unreachable for the remaining 30+ steps.
+
+3. **v7 has chronically negative mean reward** because the -0.5 fault penalty + rare +1 (only when >0.88) keeps the mean below zero. Despite this, v7 produced the highest single score.
+
+4. **v9 stayed adaptive** but peaked lower (0.8825). The always-reachable +1 tier may discourage risk-taking.
+
+5. **None showed a clear learning curve.** Mean-best-per-step is flat across all 40+ steps. The policy doesn't improve meaningfully in single-shot mode, regardless of reward shaping.
+
+6. **Root cause: single-shot episodes provide no iteration signal.** Each episode is one cold-start proposal. The scientist can't refine, can't build on prior attempts within an episode, and gets no intra-episode feedback.
+
+### 9.5 Conclusion: Moving to Tree-Structured RL
+
+The reward scheme comparison shows that the bottleneck is not the reward function but the episode structure. Moving to tree-structured RL (Design B) with node_budget=5 allows the scientist to:
+- Make 5 sequential proposals per episode with feedback after each
+- Choose which previous node to build on (PARENT selection)
+- Use intra-episode memory to refine strategies
+
+This is implemented in v6.2 (tree mode, v6 binary reward) using `MLGymTreeEnvV3` with hierarchical node IDs matching the eval-time format.
+
+### 9.6 Implementation Notes
+
+- **v8/v9 first run failed silently**: PRIME-RL's orchestrator calls `reward_fn.__name__` for logging. Class instances (v8, v9) lacked this attribute, causing every rollout to be marked as "Rollout failed" while the env-side logging appeared healthy. Fixed by adding `__name__` as a class attribute.
+- **Tree env v3 off-by-one**: verifiers' `max_turns_reached` checks `len(trajectory) >= max_turns` before each iteration, but `env_response` runs inside `get_prompt_messages` (between turns). Setting `max_turns = node_budget + 1` ensures all K proposals actually execute.
+- **Hierarchical node IDs**: Initial tree run produced all-root stars because flat `node_1`, `node_2` IDs gave no lineage cue. Switching to eval-style `root_0`, `root_0_0` IDs + richer tree_view with parent comparisons matches what the base model was trained on during eval.
+
+### 9.7 Wandb
+
+- v6: fmnist_v6_claude_executor
+- v7: fmnist_v7_fixed_tier
+- v8: fmnist_v8_global_best
+- v9: fmnist_v9_percentile
+- v6.2 tree: fmnist_v6.2_tree
+
+All at: https://wandb.ai/Gurusha-personal/mlgym-scientist-rl
