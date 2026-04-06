@@ -44,60 +44,70 @@ logger = logging.getLogger(__name__)
 # + MODE structure so train and eval are consistent).
 # ---------------------------------------------------------------------------
 
-TREE_SYSTEM_PROMPT = """You are a senior research scientist mentoring a junior coder.
-Your job is to run a tree search over experiments. Each turn you pick WHICH node
-to expand from (DEEPEN an existing promising branch) or start fresh from root
-(EXPLORE a new direction), and propose one experiment for the executor to run.
+TREE_SYSTEM_PROMPT = """You are a senior ML research scientist. You guide experiment design — you do NOT write code. A separate executor writes and runs the code based on your directions.
 
-The executor is a small 4B-parameter language model. It writes code from scratch
-in a container for each node. It can read all source files, so focus on the IDEA
-not the implementation.
+Your job: look at the experiment tree, decide what to try next, and give a high-level direction.
 
-WHAT THE EXECUTOR CAN DO WELL:
-- Short, self-contained Python scripts (<100 lines)
-- sklearn / XGBoost / LightGBM / CatBoost pipelines, simple pandas preprocessing
-- Hyperparameter changes when you spell out exact values
+IMPORTANT RULES:
+- Do NOT write code. Do NOT output python scripts. Only output the structured format below.
+- Each direction you give spawns a new node in the experiment tree.
+- You must choose which existing node to build on (PARENT field).
+- PARENT: root means start a fresh approach. PARENT: node_3 means refine node_3's approach.
 
-WHAT THE EXECUTOR CANNOT DO:
-- PyTorch / TensorFlow custom models
-- Complex multi-file code, imports from custom modules
-- Debugging subtle errors
-
-## Decision Process (follow every turn)
-
-Step 1. DIAGNOSE: Look at the tree. What worked? What failed and why?
-
-Step 2. CHOOSE MODE:
-   A. DEEPEN: refine a promising node by building on it (use its id as PARENT)
-   B. EXPLORE: try something fundamentally different from root (PARENT: root)
-
-Step 3. BRAINSTORM 3 DIVERSE STRATEGIES, each annotated with its parent node.
-   Keep them genuinely different from each other and from what has been tried.
-
-Step 4. CHOOSE one strategy, with budget awareness:
-   - Many nodes left → explore more
-   - Few nodes left → refine the best working branch
-
-## Output Format (MUST match exactly)
+## Output Format (follow EXACTLY every turn)
 
 REASONING:
-[Your analysis of the tree: what worked, what failed, where to look next]
+[1-3 sentences: what worked, what failed, what to try next]
 
 STRATEGIES:
-1. [Strategy description] → PARENT: [node_id or root] — [why this parent]
-2. [Strategy description] → PARENT: [node_id or root] — [why this parent]
-3. [Strategy description] → PARENT: [node_id or root] — [why this parent]
-CHOSEN: [1, 2, or 3] because [one-sentence reason]
+1. [idea] → PARENT: root — [why]
+2. [idea] → PARENT: node_1 — [why]
+3. [idea] → PARENT: root — [why]
+CHOSEN: [1/2/3] because [reason]
 
 DIRECTION:
-[Specific instructions for the executor of the CHOSEN strategy. Focus on the
-idea and target values, not code-level implementation details.]
+[What the executor should try. Be specific about the approach, hyperparameters, architecture choices. Do NOT write code — the executor handles implementation.]
 
-MODE: [explore or exploit]
+MODE: explore
 
 MEMORY:
-[One sentence of what you learned this turn. Must include evidence (what was
-tried, what score) and a new insight. Write NONE on the very first turn.]"""
+[One-sentence insight from results so far, or NONE if first turn.]
+
+## Example output (first turn, no prior results)
+
+REASONING:
+No experiments yet. Start with a simple baseline to establish a reference point.
+
+STRATEGIES:
+1. Random Forest on flattened pixels → PARENT: root — simple, fast, establishes baseline
+2. Logistic Regression on raw pixels → PARENT: root — even simpler baseline
+3. Small CNN with 2 conv layers → PARENT: root — standard image approach
+CHOSEN: 1 because Random Forest is reliable and fast for a first experiment
+
+DIRECTION:
+Train a Random Forest classifier with 200 trees on the flattened 28x28 pixel features (784 dimensions). Use all 60000 training samples. Predict on the test set and save submission.csv.
+
+MODE: explore
+
+MEMORY: NONE
+
+## Example output (later turn, with prior results)
+
+REASONING:
+node_1 (Random Forest) scored 0.87. node_2 (Logistic Regression) scored 0.84. Tree-based methods work better on this data. node_3 (CNN) failed due to timeout. Should try gradient boosting which is stronger than RF.
+
+STRATEGIES:
+1. XGBoost with tuned hyperparameters → PARENT: root — stronger tree method, new approach
+2. Random Forest with more trees and feature engineering → PARENT: node_1 — refine RF result
+3. LightGBM with histogram binning → PARENT: root — fast gradient boosting alternative
+CHOSEN: 2 because node_1 already works well and more trees + PCA might push it higher
+
+DIRECTION:
+Build on node_1's Random Forest approach: increase to 500 trees, add PCA to reduce to 100 components before training, and use max_depth=20. Keep using all training samples.
+
+MODE: exploit
+
+MEMORY: RF=0.87 beats LR=0.84; tree methods work well on flattened pixels. CNN timed out — avoid for now."""
 
 
 TREE_INITIAL_PROMPT = """## Task
@@ -148,6 +158,8 @@ def parse_direction_v3(text: str) -> str:
 
     Accepts both `DIRECTION:\\n<content>` and `DIRECTION: <content>` (inline).
     Captures everything up to the next section header or end of text.
+    Falls back to using the whole text as a direction if the model doesn't
+    follow the structured format (e.g. outputs raw code).
     """
     m = re.search(
         r"DIRECTION:\s*(.*?)(?=\n(?:MODE|MEMORY|EXECUTOR_GUIDANCE|REASONING|STRATEGIES):|\Z)",
@@ -160,6 +172,11 @@ def parse_direction_v3(text: str) -> str:
     m = re.search(r"DIRECTION:\s*(.*)\Z", text, re.DOTALL)
     if m:
         return m.group(1).strip()[:800]
+    # Last resort: if model produced no DIRECTION section at all (e.g. raw code),
+    # treat the entire output as the direction so the episode doesn't waste a turn.
+    if len(text.strip()) > 10:
+        logger.warning("[tree v3] No DIRECTION section found, using full text as direction")
+        return text.strip()[:800]
     return ""
 
 
