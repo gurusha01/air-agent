@@ -130,7 +130,25 @@ Baseline score: {baseline_score:.4f}
 {memory}
 
 You have {budget_left} nodes remaining out of {total_budget} total.
-Make your decision."""
+
+IMPORTANT: You are NOT the executor. Do NOT write code. Do NOT output python scripts.
+Instead, output your analysis and direction in this EXACT format:
+
+REASONING:
+[1-3 sentences analyzing the tree]
+
+STRATEGIES:
+1. [idea] → PARENT: root — [why]
+2. [idea] → PARENT: root — [why]
+3. [idea] → PARENT: root — [why]
+CHOSEN: [number] because [reason]
+
+DIRECTION:
+[What approach to try — describe the idea, not the code]
+
+MODE: explore
+
+MEMORY: NONE"""
 
 
 TREE_TURN_PROMPT = """## Result of Last Expansion
@@ -146,7 +164,8 @@ TREE_TURN_PROMPT = """## Result of Last Expansion
 {memory}
 
 You have {budget_left} nodes remaining.
-Make your decision."""
+
+Do NOT write code. Respond with REASONING, STRATEGIES (with PARENT: for each), CHOSEN, DIRECTION, MODE, MEMORY."""
 
 
 # ---------------------------------------------------------------------------
