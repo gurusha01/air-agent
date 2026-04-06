@@ -165,7 +165,8 @@ TREE_TURN_PROMPT = """## Result of Last Expansion
 
 You have {budget_left} nodes remaining.
 
-Do NOT write code. Respond with REASONING, STRATEGIES (with PARENT: for each), CHOSEN, DIRECTION, MODE, MEMORY."""
+Do NOT write code. Respond with REASONING, STRATEGIES (with PARENT: for each), CHOSEN, DIRECTION, MODE, MEMORY.
+TIP: To REFINE a promising node, set PARENT: to that node's ID (e.g. PARENT: root_0). To try something new, use PARENT: root."""
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +344,11 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
                 new_prefix = "  "
             else:
                 branch = "└─ " if is_last else "├─ "
-                lines.append(f"{prefix}{branch}Node {node_id} [{strat}]")
+                # Show fuller strategy text (up to 200 chars) so the scientist
+                # can see what each node actually tried and decide whether to
+                # build on it (PARENT: this_node) or try something new from root.
+                strat_full = (n.get("strategy") or "").replace("\n", " ")[:200]
+                lines.append(f"{prefix}{branch}Node {node_id} [{strat_full}]")
                 lines.append(f"{prefix}{'   ' if is_last else '│  '}"
                              f"  Score: {sc_str} | Children: {n_children}{parent_note}")
                 new_prefix = prefix + ("   " if is_last else "│  ")
