@@ -208,7 +208,7 @@ def parse_parent(text: str, valid_ids: set[str]) -> str:
     """
     chosen_match = re.search(r"CHOSEN:\s*(\d+)", text)
     strat_lines = re.findall(
-        r"(\d+)\.\s.*?(?:→|->)\s*PARENT:\s*[\"']?([A-Za-z0-9_]+)[\"']?\s*(?:—|-|$)",
+        r"(\d+)\.\s.*?(?:→|->)\s*PARENT:\s*[\"']?([A-Za-z0-9_]+(?:_\d+)*)[\"']?\s*(?:—|-|$)",
         text,
     )
     if chosen_match and strat_lines:
@@ -220,7 +220,7 @@ def parse_parent(text: str, valid_ids: set[str]) -> str:
                     return pid
                 return "root"  # invalid → default
     # Fallback 1: any PARENT: line at all
-    any_parent = re.search(r"PARENT:\s*[\"']?([A-Za-z0-9_]+)[\"']?", text)
+    any_parent = re.search(r"PARENT:\s*[\"']?([A-Za-z0-9_]+(?:_\d+)*)[\"']?", text)
     if any_parent:
         pid = any_parent.group(1)
         if pid == "root" or pid in valid_ids:
@@ -299,7 +299,12 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
         )
 
     def _format_tree(self, tree: list[dict]) -> str:
-        """Hierarchical rendering using parent_id links."""
+        """Hierarchical rendering matching eval-time format.
+
+        Shows parent comparison ("better/worse than parent by X") and children
+        count so the scientist can see which branches are worth deepening.
+        Uses hierarchical node IDs (root_0, root_0_0) that encode lineage.
+        """
         if not tree:
             return "  (empty tree)"
         node_by_id = {n["id"]: n for n in tree}
@@ -309,6 +314,8 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
             if pid is not None:
                 children_map.setdefault(pid, []).append(n["id"])
 
+        higher = tree[0].get("higher_is_better", True) if tree else True
+        # Try to get it from a broader context if stored
         lines: list[str] = []
 
         def _render(node_id: str, prefix: str, is_last: bool, is_root: bool):
@@ -317,13 +324,28 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
                 return
             sc = n.get("score")
             sc_str = f"{sc:.4f}" if sc is not None else "FAILED"
-            strat = (n.get("strategy") or "").replace("\n", " ")[:100]
+            strat = (n.get("strategy") or "").replace("\n", " ")[:80]
+            n_children = len(children_map.get(node_id, []))
+
+            # Parent comparison
+            parent_note = ""
+            pid = n.get("parent_id")
+            if pid and pid in node_by_id and sc is not None:
+                parent_sc = node_by_id[pid].get("score")
+                if parent_sc is not None:
+                    diff = sc - parent_sc
+                    better = (diff > 0) if higher else (diff < 0)
+                    parent_note = f" ({'better' if better else 'worse'} than parent by {abs(diff):.4f})"
+
             if is_root:
-                lines.append(f"{node_id}: baseline={sc_str}")
-                new_prefix = ""
+                lines.append(f"Node {node_id} [Baseline]")
+                lines.append(f"  Score: {sc_str} | Children: {n_children}")
+                new_prefix = "  "
             else:
                 branch = "└─ " if is_last else "├─ "
-                lines.append(f"{prefix}{branch}{node_id} [{sc_str}] {strat}")
+                lines.append(f"{prefix}{branch}Node {node_id} [{strat}]")
+                lines.append(f"{prefix}{'   ' if is_last else '│  '}"
+                             f"  Score: {sc_str} | Children: {n_children}{parent_note}")
                 new_prefix = prefix + ("   " if is_last else "│  ")
             kids = children_map.get(node_id, [])
             for i, cid in enumerate(kids):
@@ -336,7 +358,7 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
         if best is None:
             lines.append("\n(no scored children yet)")
         else:
-            lines.append(f"\nBest child score: {best:.4f}")
+            lines.append(f"\nBest score so far: {best:.4f}")
         return "\n".join(lines)
 
     async def setup_state(self, state: vf.State) -> vf.State:
@@ -345,6 +367,8 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
         if state.get("tree"):
             state["tree"][0]["parent_id"] = None
             state["tree"][0]["depth"] = 0
+        # Track child counters per node for hierarchical naming (root_0, root_0_0, etc.)
+        state["_child_counter"] = {}
         return state
 
     async def env_response(
@@ -408,13 +432,18 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
         self._log_rollout_tree(state, direction, score, feedback, executor_fault,
                                raw_text, parent_id)
 
-        # Attach new node to the chosen parent
+        # Attach new node to the chosen parent with hierarchical naming
+        # (root_0, root_0_0, root_1, etc.) so the scientist can see lineage in the ID.
         state["node_counter"] += 1
-        node_id = f"node_{state['node_counter']}"
         parent_node = next(
             (n for n in state["tree"] if n["id"] == parent_id),
             state["tree"][0],  # fallback: root
         )
+        child_counter = state.get("_child_counter", {})
+        child_idx = child_counter.get(parent_id, 0)
+        child_counter[parent_id] = child_idx + 1
+        state["_child_counter"] = child_counter
+        node_id = f"{parent_id}_{child_idx}"
         new_depth = parent_node.get("depth", 0) + 1
         state["tree"].append({
             "id": node_id,
