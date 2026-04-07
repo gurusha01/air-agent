@@ -287,23 +287,33 @@ CRITICAL RULES:
 6. rm -rf checkpoints before re-training
 7. When modifying .py files, always verify with compile() before writing
 
-AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability (tfp). Do NOT pip install anything.
+CRITICAL: The src/ directory and all source files ALREADY EXIST and the code ALREADY WORKS.
+Do NOT use mkdir. Do NOT rewrite entire files with cat << ENDOFFILE. Do NOT pip install.
 
-WORKSPACE:
-- src/config.yaml - Hyperparameters (train_config with nested keys)
-- src/networks.py - Actor-Critic model (class Model, get_model_ready function)
-- src/policy.py - PPO training loop, rollout manager, loss functions
-- src/train.py - Entry point (loads config, calls train_ppo)
-- src/helpers.py - Config loading, pickle save/load
+HOW TO EDIT FILES:
+- Config: sed -i 's/old_value/new_value/g' src/config.yaml
+- Code (single line): sed -i 's/old_line/new_line/g' src/filename.py
+- Code (multi-line): python -c "
+import pathlib
+p = pathlib.Path('src/filename.py')
+code = p.read_text()
+code = code.replace('old_code', 'new_code')
+compile(code, 'test', 'exec')
+p.write_text(code)
+"
 
-MANDATORY WORKFLOW (follow this EXACT order):
-1. cat src/networks.py  (READ existing code first)
-2. cat src/policy.py    (READ existing code)
-3. cat src/train.py     (READ existing code)
-4. Make modifications (verify with compile() before writing)
-5. rm -rf checkpoints
-6. python src/train.py
-7. validate""",
+MANDATORY WORKFLOW — follow this EXACT order, no exceptions:
+1. cat src/config.yaml  (understand current settings)
+2. Make your changes using sed -i or python -c (max 5 edits)
+3. rm -rf checkpoints
+4. python src/train.py  (MUST run training before validate)
+5. validate
+
+You MUST reach step 4 (python src/train.py) within your first 10 actions. If you spend more than 5 actions editing, STOP editing and run training.
+
+WORKSPACE: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
+PACKAGES: jax, flax, gymnax, optax, numpy, distrax, tensorflow_probability
+ONE command per response. No explanations.""",
         use_generic_conda=False,
         needs_gpu=True,
         step_timeout=2400.0,
@@ -547,6 +557,384 @@ MANDATORY WORKFLOW (follow this EXACT order):
         needs_gpu=True,
         step_timeout=2400.0,
         task_type="rl",
+    ),
+    "imageClassificationFMnist": TaskProfile(
+        name="Fashion MNIST Image Classification",
+        primary_metric="accuracy",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="python -c \"from datasets import load_dataset; ds=load_dataset('zalando-datasets/fashion_mnist',split='train[:3]'); print('Columns:', ds.column_names); print('Labels:', ds['label']); print('Image shape:', ds[0]['image'].size)\"",
+        strategy_topic="Fashion MNIST image classification (10-class clothing classification, maximize accuracy)",
+        branch_write_instruction=(
+            "Write a complete train_and_predict.py that loads Fashion MNIST from HuggingFace, "
+            "trains a classifier, predicts on the test set, and saves submission.csv with a single 'label' column.\n"
+            "Then run 'python train_and_predict.py', then 'validate'.\n"
+            "Output your first command (write the file with cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        root_task_desc=(
+            "Fashion MNIST Image Classification.\n"
+            "Baseline accuracy: {baseline_score:.4f}\n\n"
+            "Dataset: zalando-datasets/fashion_mnist from HuggingFace (28x28 grayscale images, 10 classes).\n"
+            "Classes: T-shirt/top, Trouser, Pullover, Dress, Coat, Sandal, Shirt, Sneaker, Bag, Ankle boot.\n"
+            "Train: 60,000 images. Test: 10,000 images.\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Train a classifier, predict labels for the test set, save as submission.csv with a single 'label' column.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="""You are an ML research agent. Output ONLY ONE command per response. No explanations.
+
+To write a Python file, use this EXACT format:
+cat << 'ENDOFFILE' > train_and_predict.py
+import pandas as pd
+# your code here
+ENDOFFILE
+
+COMMANDS:
+- cat << 'ENDOFFILE' > filename.py ... ENDOFFILE - Write a file
+- python <script.py> - Run Python script
+- validate - Check your solution score (ONLY works after submission.csv exists)
+- ls, cat, head - View files
+
+CRITICAL RULES:
+1. ONE command per response
+2. Use cat << 'ENDOFFILE' > file to write files
+3. ALWAYS run 'python train_and_predict.py' BEFORE 'validate'
+4. Load data from HuggingFace: load_dataset("zalando-datasets/fashion_mnist")
+5. submission.csv must have a single 'label' column with predicted class indices (0-9)
+
+AVAILABLE PACKAGES: pandas, numpy, scikit-learn, xgboost, lightgbm, torch, transformers, scipy, datasets. Do NOT pip install anything.
+
+PERFORMANCE TIPS (CRITICAL — code will be killed after 120s):
+- Load data: `ds = load_dataset("zalando-datasets/fashion_mnist"); X = np.array(ds['train']['image']).reshape(-1, 784) / 255.0`
+- Do NOT iterate samples one by one — use batch numpy operations
+- For sklearn: use 10000 training samples max. Use max_iter=100.
+- For neural nets: 10 epochs max.
+- Run: timeout 120 python train_and_predict.py
+
+WORKSPACE:
+- baseline.py - Reference baseline (PyTorch CNN via HuggingFace Trainer)
+- evaluate.py - Evaluation script (read-only)
+- sample_submission.csv - Submission format example
+- Output: submission.csv with predicted labels
+
+MANDATORY WORKFLOW:
+1. cat << 'ENDOFFILE' > train_and_predict.py
+<complete python script>
+ENDOFFILE
+2. python train_and_predict.py
+3. validate""",
+        task_type="classification",
+    ),
+
+    "languageModelingFineWeb": TaskProfile(
+        name="Language Modeling (FineWeb GPT-2)",
+        primary_metric="val_loss",
+        higher_is_better=False,
+        script_name="baseline.py",
+        submission_file=None,  # model.pt + model_config.pt, not CSV
+        data_head_cmd=None,
+        strategy_topic="language model training (GPT-2 style on FineWeb, minimize validation loss)",
+        branch_write_instruction=(
+            "Modify baseline.py to improve the model, then run "
+            "'torchrun --nproc_per_node=$(nvidia-smi --list-gpus | wc -l) --standalone baseline.py', "
+            "then 'validate'.\n"
+            "You MUST read baseline.py first before making any changes.\n"
+            "Output your first command (cat baseline.py):"
+        ),
+        root_task_desc=(
+            "Language Modeling — GPT-2 on FineWeb.\n"
+            "Baseline val_loss: {baseline_score:.4f}\n\n"
+            "This is a modded-nanogpt GPT-2 style model trained on FineWeb (2.4B tokens).\n"
+            "Architecture: 12 transformer layers, 6 heads, 768 embedding dim, RoPE, RMSNorm, ReLU^2.\n"
+            "Three optimizers: Adam for embeddings (lr=0.3), Adam for LM head (lr=0.002), Muon for transformer blocks (lr=0.02).\n"
+            "Training: 500 iterations, batch_size=512, seq_len=1024, bfloat16, torch.compile, DDP.\n\n"
+            "Files: baseline.py (training script), evaluate.py (read-only evaluation).\n"
+            "Submission: model.pt (state_dict) + model_config.pt (pickle config).\n\n"
+            "Goal: Minimize val_loss. Read baseline.py first, then modify and train.\n\n"
+            "Output your first command (cat baseline.py):"
+        ),
+        system_prompt="""You are an ML research agent. Output ONLY ONE command per response. No explanations.
+
+TASK: Train a GPT-2 style language model on FineWeb. Minimize validation loss.
+
+WORKSPACE FILES:
+- baseline.py — Full training script (modded-nanogpt, distributed PyTorch)
+- evaluate.py — Evaluation script (READ-ONLY, do not modify)
+
+COMMANDS:
+- cat baseline.py — Read the training script
+- sed -i 's/old/new/g' baseline.py — Make targeted edits
+- python -c "..." — Programmatic edits (read, modify, compile-check, write)
+- cat << 'ENDOFFILE' > baseline.py ... ENDOFFILE — Full file rewrite
+- torchrun --nproc_per_node=$(nvidia-smi --list-gpus | wc -l) --standalone baseline.py — Train
+- validate — Evaluate (ONLY after training produces model.pt)
+- ls, head — View files
+
+TUNABLE KNOBS IN baseline.py:
+- Hyperparameters dataclass: num_iterations, warmup_iters, warmdown_iters, weight_decay, device_batch_size, sequence_length
+- Optimizer LRs: embedding lr=0.3, lm_head lr=0.002, transformer lr=0.02
+- Optimizer params: betas, momentum
+- Architecture: n_layer, n_head, n_embd (in Model constructor call)
+- Activation function (currently relu^2), normalization, attention config
+
+CRITICAL RULES:
+1. ONE command per response
+2. ALWAYS read baseline.py BEFORE modifying it
+3. ALWAYS run training BEFORE validate
+4. Training command: torchrun --nproc_per_node=$(nvidia-smi --list-gpus | wc -l) --standalone baseline.py
+5. Do NOT modify evaluate.py
+6. When modifying code with python -c, always compile() before writing to catch syntax errors
+
+MANDATORY WORKFLOW:
+1. cat baseline.py  (READ first)
+2. Make targeted modifications (sed -i or python -c)
+3. torchrun --nproc_per_node=$(nvidia-smi --list-gpus | wc -l) --standalone baseline.py
+4. validate""",
+        use_generic_conda=True,
+        needs_gpu=True,
+        step_timeout=2400.0,
+        task_type="language_modeling",
+    ),
+
+    "naturalLanguageInferenceMNLI": TaskProfile(
+        name="Natural Language Inference (BERT on MNLI)",
+        primary_metric="validation_accuracy",
+        higher_is_better=True,
+        script_name="baseline.py",
+        submission_file=None,  # bert_mnli_model/ folder
+        data_head_cmd=None,
+        strategy_topic="BERT fine-tuning for natural language inference (MNLI 3-class, maximize validation accuracy)",
+        branch_write_instruction=(
+            "Modify baseline.py to improve BERT fine-tuning, then run 'python baseline.py', "
+            "then 'validate'.\n"
+            "You MUST read baseline.py first before making any changes.\n"
+            "Output your first command (cat baseline.py):"
+        ),
+        root_task_desc=(
+            "Natural Language Inference — BERT on MNLI.\n"
+            "Baseline validation_accuracy: {baseline_score:.4f}\n\n"
+            "Fine-tuning bert-base-uncased on MNLI (3 classes: entailment, contradiction, neutral).\n"
+            "Current config: EPOCHS=1, BATCH_SIZE=32, LEARNING_RATE=1e-7, MAX_LENGTH=128.\n"
+            "Uses mixed-precision training (GradScaler + autocast).\n\n"
+            "Files: baseline.py (training script), evaluate.py (read-only evaluation).\n"
+            "Submission: bert_mnli_model/ folder (model.save_pretrained).\n\n"
+            "Goal: Maximize validation accuracy. Read baseline.py first, then modify and train.\n\n"
+            "Output your first command (cat baseline.py):"
+        ),
+        system_prompt="""You are an ML research agent. Output ONLY ONE command per response. No explanations.
+
+TASK: Fine-tune BERT for natural language inference on MNLI. Maximize validation accuracy.
+
+WORKSPACE FILES:
+- baseline.py — Training script (BERT fine-tuning with HuggingFace transformers)
+- evaluate.py — Evaluation script (READ-ONLY, do not modify)
+
+COMMANDS:
+- cat baseline.py — Read the training script
+- sed -i 's/old/new/g' baseline.py — Make targeted edits
+- python -c "..." — Programmatic edits (read, modify, compile-check, write)
+- cat << 'ENDOFFILE' > baseline.py ... ENDOFFILE — Full file rewrite
+- python baseline.py — Train
+- validate — Evaluate (ONLY after training produces bert_mnli_model/)
+- ls, head — View files
+
+TUNABLE KNOBS IN baseline.py:
+- EPOCHS (currently 1 — very low, likely the biggest lever)
+- BATCH_SIZE (currently 32)
+- LEARNING_RATE (currently 1e-7 — very low)
+- MAX_LENGTH (currently 128)
+- Model choice (currently bert-base-uncased, could try bert-large or other models)
+- Optimizer (currently AdamW)
+- Learning rate scheduling (currently none — add warmup/decay)
+- Weight decay, gradient clipping
+
+CRITICAL RULES:
+1. ONE command per response
+2. ALWAYS read baseline.py BEFORE modifying it
+3. ALWAYS run training BEFORE validate
+4. Do NOT modify evaluate.py
+5. When modifying code with python -c, always compile() before writing to catch syntax errors
+6. Submission is saved by model.save_pretrained('bert_mnli_model')
+
+MANDATORY WORKFLOW:
+1. cat baseline.py  (READ first)
+2. Make modifications (sed -i or python -c or full rewrite)
+3. python baseline.py
+4. validate""",
+        use_generic_conda=True,
+        needs_gpu=True,
+        step_timeout=2400.0,
+        task_type="nlp",
+    ),
+    # ---- Additional tasks (game theory, vision, NLP, optimization) ----
+    "blotto": TaskProfile(
+        name="Colonel Blotto Game",
+        primary_metric="Score",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="ls /home/agent/workspace/",
+        strategy_topic="the Colonel Blotto game (allocate soldiers across battlefields to maximize expected score)",
+        branch_write_instruction="Write a complete strategy script, then run it, then 'validate'.\nOutput your first command:",
+        root_task_desc=(
+            "Colonel Blotto Game.\n"
+            "Baseline Score: {baseline_score}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Design a strategy to allocate soldiers across battlefields. Write and run your strategy.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="You are a game theory agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        use_generic_conda=True,
+        needs_gpu=False,
+        task_type="game_theory",
+    ),
+    "prisonersDilemma": TaskProfile(
+        name="Iterated Prisoner's Dilemma",
+        primary_metric="Score",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="ls /home/agent/workspace/",
+        strategy_topic="the Iterated Prisoner's Dilemma (design a strategy to maximize cumulative score against unknown opponents)",
+        branch_write_instruction="Write a complete strategy script, then run it, then 'validate'.\nOutput your first command:",
+        root_task_desc=(
+            "Iterated Prisoner's Dilemma.\n"
+            "Baseline Score: {baseline_score}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Design a strategy for iterated PD (cooperate=0, defect=1). Maximize total score.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="You are a game theory agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        use_generic_conda=True,
+        needs_gpu=False,
+        task_type="game_theory",
+    ),
+    "3SATTime": TaskProfile(
+        name="3-SAT Solver Heuristic Optimization",
+        primary_metric="Time",
+        higher_is_better=False,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="ls /home/agent/workspace/",
+        strategy_topic="the 3-SAT heuristic optimization task (design variable selection heuristics to minimize solving time)",
+        branch_write_instruction="Write a solver heuristic script, then run it, then 'validate'.\nOutput your first command:",
+        root_task_desc=(
+            "3-SAT Solver Heuristic Optimization.\n"
+            "Baseline Time: {baseline_score}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Design a DPLL variable selection heuristic to solve 3-SAT instances faster. Minimize time.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="You are an optimization agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        use_generic_conda=True,
+        needs_gpu=False,
+        task_type="optimization",
+    ),
+    "imageCaptioningCOCO": TaskProfile(
+        name="Image Captioning (MS-COCO)",
+        primary_metric="BLEU Score",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="ls /home/agent/workspace/",
+        strategy_topic="the MS-COCO image captioning task (train a model to generate captions for images, maximize BLEU score)",
+        branch_write_instruction="Write a training script, then run it, then 'validate'.\nOutput your first command:",
+        root_task_desc=(
+            "Image Captioning (MS-COCO).\n"
+            "Baseline BLEU Score: {baseline_score}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Train an image captioning model. Maximize BLEU score on test set.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        use_generic_conda=True,
+        needs_gpu=True,
+        task_type="vision_nlp",
+    ),
+    "imageClassificationCifar10": TaskProfile(
+        name="CIFAR-10 Image Classification",
+        primary_metric="accuracy",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="ls /home/agent/workspace/",
+        strategy_topic="the CIFAR-10 image classification task (train a classifier on 32x32 color images, 10 classes)",
+        branch_write_instruction="Write a training script, then run it, then 'validate'.\nOutput your first command:",
+        root_task_desc=(
+            "CIFAR-10 Image Classification.\n"
+            "Baseline accuracy: {baseline_score:.4f}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Train a classifier for CIFAR-10 (10 classes, 32x32 color images). Maximize accuracy.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        use_generic_conda=True,
+        needs_gpu=False,
+        task_type="vision",
+    ),
+    "imageClassificationCifar10L1": TaskProfile(
+        name="CIFAR-10 Image Classification (L1 variant)",
+        primary_metric="accuracy",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="ls /home/agent/workspace/",
+        strategy_topic="the CIFAR-10 L1 image classification task (classify 32x32 color images with L1 regularization constraint)",
+        branch_write_instruction="Write a training script, then run it, then 'validate'.\nOutput your first command:",
+        root_task_desc=(
+            "CIFAR-10 Image Classification (L1 variant).\n"
+            "Baseline accuracy: {baseline_score:.4f}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Classify CIFAR-10 images. Maximize accuracy.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        use_generic_conda=True,
+        needs_gpu=False,
+        task_type="vision",
+    ),
+    "regressionHousingPrice": TaskProfile(
+        name="Housing Price Prediction",
+        primary_metric="rmse",
+        higher_is_better=False,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="head -5 /home/agent/workspace/data/train.csv 2>/dev/null || ls /home/agent/workspace/",
+        strategy_topic="the housing price prediction task (minimize RMSE on house price regression)",
+        branch_write_instruction="Write a training script, then run it, then 'validate'.\nOutput your first command:",
+        root_task_desc=(
+            "Housing Price Prediction.\n"
+            "Baseline RMSE: {baseline_score}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Train a regression model to predict house prices. Minimize RMSE.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        use_generic_conda=True,
+        needs_gpu=False,
+        task_type="tabular",
+    ),
+    "regressionHousePrice": TaskProfile(
+        name="Housing Price Prediction",
+        primary_metric="rmse",
+        higher_is_better=False,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="head -5 /home/agent/workspace/data/train.csv 2>/dev/null || ls /home/agent/workspace/",
+        strategy_topic="the housing price prediction task (minimize RMSE on house price regression)",
+        branch_write_instruction="Write a training script, then run it, then 'validate'.\nOutput your first command:",
+        root_task_desc=(
+            "Housing Price Prediction.\n"
+            "Baseline RMSE: {baseline_score}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "Goal: Train a regression model to predict house prices. Minimize RMSE.\n\n"
+            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        use_generic_conda=True,
+        needs_gpu=False,
+        task_type="tabular",
     ),
 }
 
@@ -816,8 +1204,8 @@ class ContainerManager:
                     timeout_duration=10,
                 )
                 self.env.communicate(
-                    "pip install -q xgboost lightgbm catboost > /dev/null 2>&1",
-                    timeout_duration=300,
+                    "pip install -q xgboost lightgbm catboost > /dev/null 2>&1 || true",
+                    timeout_duration=30,
                 )
                 check = self.env.communicate(
                     "python -c 'import torch, sklearn, xgboost; "
@@ -898,7 +1286,9 @@ class LLMClient:
         else:
             api_key = os.environ.get("OPENAI_API_KEY", "local")
         kwargs = {"api_key": api_key}
-        if base_url:
+        # Skip explicit base_url for OpenAI (use default — avoids connection issues on some clusters)
+        # Always set base_url for Anthropic and local vLLM
+        if base_url and "openai.com" not in base_url:
             kwargs["base_url"] = base_url
         self.client = OpenAI(**kwargs)
         self.model = model
@@ -942,7 +1332,7 @@ class LLMClient:
                 if attempt < 2:
                     time.sleep(2 ** (attempt + 1))
                 else:
-                    raise RuntimeError(f"LLM failed after 3 attempts: {e}")
+                    raise RuntimeError(f"LLM failed after 3 attempts: {type(e).__name__}: {e}")
 
     def generate_strategies(self, current_score: float, baseline_score: float,
                             previous_approach: str, n: int,
