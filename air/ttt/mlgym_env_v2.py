@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are a senior research scientist mentoring a junior coder.
 You guide experiment design by proposing directions for the executor to implement.
 
-The executor is a small language model that writes and runs code in a container.
+The executor is a language model that writes and runs code in a container.
 It can read all source files. Focus on the IDEA, not the code.
 
 WHAT THE EXECUTOR CAN DO WELL:
@@ -58,7 +58,6 @@ WHAT THE EXECUTOR CAN DO WELL:
 - Hyperparameter changes when you spell out exact values
 
 WHAT THE EXECUTOR CANNOT DO:
-- PyTorch/TensorFlow custom models
 - Complex multi-file code or algorithms >150 lines
 - Debugging subtle errors
 
@@ -83,6 +82,51 @@ DIRECTION:
 
 MEMORY:
 [One sentence about what you learned from the results. Write NONE if first turn.]"""
+
+
+SYSTEM_PROMPT_PYTORCH = """You are a senior research scientist mentoring a capable coder.
+You guide experiment design by proposing directions for the executor to implement.
+
+The executor is a frontier language model that modifies and runs PyTorch code in a container.
+It can read, modify, and rewrite source files. It has full PyTorch/distributed training capability.
+
+WHAT THE EXECUTOR CAN DO WELL:
+- Reading and modifying existing PyTorch training scripts
+- Hyperparameter tuning (learning rates, batch sizes, schedules, optimizers)
+- Architecture modifications (layers, heads, dimensions, activations, normalization)
+- Training loop changes (gradient accumulation, mixed precision, compilation)
+- Full file rewrites when needed
+
+WHAT THE EXECUTOR CANNOT DO:
+- Download new datasets or install new packages
+- Run multi-step pipelines requiring complex orchestration
+- Debug environment/CUDA issues (container is pre-configured)
+
+For each decision, follow this process:
+1. DIAGNOSE: What worked and what failed? Why?
+2. BRAINSTORM 3 strategies spanning safe/moderate/bold
+3. CHOOSE one and explain why
+
+Respond in this format:
+
+REASONING:
+[Your analysis of what worked, what failed, and why]
+
+STRATEGIES:
+1. [Safe incremental change] — [risk assessment]
+2. [Moderate modification] — [risk assessment]
+3. [Bold new direction] — [risk assessment]
+CHOSEN: [number] because [reason]
+
+DIRECTION:
+[Clear instructions for the executor. Be specific about what to change and to what values.]
+
+MEMORY:
+[One sentence about what you learned from the results. Write NONE if first turn.]"""
+
+
+# Task types that should use the PyTorch-aware scientist prompt
+_PYTORCH_TASK_TYPES = {"language_modeling", "nlp", "deep_learning"}
 
 
 INITIAL_PROMPT = """## Task
@@ -201,22 +245,28 @@ REWARD_STATE_DIR = Path("/scratch/jarnav/rollout_logs")
 
 
 def _episode_score(state) -> tuple[float | None, bool]:
-    """Return (raw_score, higher_is_better) for the current episode's single proposal.
-    Raw score is None on executor fault / no-score. We read from the last tree
-    entry rather than state['best_score'] because the latter is clipped at
-    baseline. The first element (root) is excluded."""
+    """Return (best_score_in_episode, higher_is_better).
+
+    Returns the BEST score across all non-root tree nodes in the episode,
+    not just the last node. This is critical for tree-structured episodes
+    where the best score may appear at any depth, not necessarily the last
+    expansion.
+
+    Returns None if no valid score was achieved (executor fault on all nodes).
+    """
     higher = state.get("higher_is_better", True)
     any_score = state.get("any_score_achieved", False)
     if not any_score:
         return None, higher
-    tree = state.get("tree", [])
-    # Find the highest-index non-root node that has a numeric score.
-    for node in reversed(tree):
-        if node.get("id") == "root":
-            continue
-        s = node.get("score")
-        if s is not None:
-            return float(s), higher
+    # Use state["best_score"] which is correctly maintained by env_response
+    # as the running max (or min for lower-is-better) across all tree nodes.
+    best = state.get("best_score")
+    baseline = state.get("baseline_score", 0)
+    # best_score starts at baseline and is updated via > (or <) comparison
+    # in env_response. If it's still at baseline and any_score is True,
+    # it means all scored nodes were at or below baseline.
+    if best is not None:
+        return float(best), higher
     return None, higher
 
 
@@ -244,20 +294,25 @@ discrete_reward_v2 = reward_v6_binary
 V7_TAU = 0.88
 
 def reward_v7_fixed_tier(parser, completion, answer, state, **kwargs) -> float:
+    return reward_v7_fixed_tier_param(parser, completion, answer, state, tau=V7_TAU, **kwargs)
+
+
+def reward_v7_fixed_tier_param(parser, completion, answer, state, tau: float = V7_TAU, **kwargs) -> float:
     s, higher = _episode_score(state)
     b = state.get("baseline_score", 0)
     if s is None:
         r = -0.5
     elif higher:
         if s < b:           r = 0.0
-        elif s <= V7_TAU:   r = 0.2
+        elif s <= tau:      r = 0.2
         else:               r = 1.0
     else:
-        tau_lo = 1.0 - V7_TAU
+        # For lower-is-better: tau is the target val_loss (lower = better).
+        # Score must be below tau to get full reward.
         if s > b:           r = 0.0
-        elif s >= tau_lo:   r = 0.2
+        elif s >= tau:      r = 0.2
         else:               r = 1.0
-    _log_reward("v7_fixed_tier", r, s, b, s is not None, state, extra={"tau": V7_TAU})
+    _log_reward("v7_fixed_tier", r, s, b, s is not None, state, extra={"tau": tau})
     return r
 
 
@@ -462,6 +517,7 @@ class MLGymTreeEnvV2(vf.MultiTurnEnv):
         rubric: vf.Rubric | None = None,
         reward_scheme: str = "v6_binary",
         reward_batch_size: int = 8,
+        v7_tau: float | None = None,
         **kwargs,
     ):
         self.task_name = task_name or task
@@ -495,7 +551,12 @@ class MLGymTreeEnvV2(vf.MultiTurnEnv):
             data_head="(code files available in workspace)",
         )
 
-        system_prompt = system_prompt or SYSTEM_PROMPT
+        # Select scientist prompt based on task type
+        if system_prompt is None:
+            if getattr(tp, "task_type", "") in _PYTORCH_TASK_TYPES:
+                system_prompt = SYSTEM_PROMPT_PYTORCH
+            else:
+                system_prompt = SYSTEM_PROMPT
 
         # Parser extracts DIRECTION from freeform text
         parser = parser or vf.XMLParser(fields=["proposal"], answer_field="proposal")
@@ -511,7 +572,12 @@ class MLGymTreeEnvV2(vf.MultiTurnEnv):
             reward_callable = reward_v6_binary
             self._reward_obj = None
         elif reward_scheme == "v7_fixed_tier":
-            reward_callable = reward_v7_fixed_tier
+            tau = v7_tau if v7_tau is not None else V7_TAU
+            self._v7_tau = tau
+            logger.info(f"v7 tau={tau}")
+            def _v7_with_tau(parser, completion, answer, state, **kw):
+                return reward_v7_fixed_tier_param(parser, completion, answer, state, tau=tau, **kw)
+            reward_callable = _v7_with_tau
             self._reward_obj = None
         elif reward_scheme == "v8_global_best":
             self._reward_obj = RewardV8GlobalBest(
