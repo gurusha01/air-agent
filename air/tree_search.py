@@ -25,6 +25,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -936,12 +937,104 @@ MANDATORY WORKFLOW:
         needs_gpu=False,
         task_type="tabular",
     ),
+
+    # ---- MLE-bench tasks ----
+    "mlebenchJigsawToxic": TaskProfile(
+        name="Jigsaw Toxic Comment Classification (MLE-bench)",
+        primary_metric="column_wise_roc_auc",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="head -3 data/train.csv 2>/dev/null | cut -c1-120",
+        strategy_topic="multilabel toxic comment classification (predict probability for 6 toxicity categories, maximize mean column-wise ROC AUC)",
+        branch_write_instruction=(
+            "Write a complete train_and_predict.py, run it, then 'validate'.\n"
+            "Read baseline.py first for data layout.\n"
+            "Output your first command (cat baseline.py):"
+        ),
+        root_task_desc=(
+            "Jigsaw Toxic Comment Classification (MLE-bench).\n"
+            "Baseline column_wise_roc_auc: {baseline_score:.4f}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "TASK: Predict toxicity probabilities for Wikipedia comments.\n"
+            "Files: data/train.csv (labeled), data/test.csv (unlabeled), data/sample_submission.csv\n"
+            "Output: submission.csv with columns: id, toxic, severe_toxic, obscene, threat, insult, identity_hate\n\n"
+            "Baseline (TF-IDF + LR per class) scores ~0.96 ROC AUC. Top solutions reach ~0.9886.\n"
+            "Try: better text features (char n-grams), ensembling, transformers (BERT), calibration.\n\n"
+            "Write train_and_predict.py now (cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="""You are an ML engineering agent. Output ONLY ONE command per response. No explanations.
+
+TASK: Jigsaw Toxic Comment Classification. Maximize column-wise mean ROC AUC.
+
+WORKSPACE:
+- data/train.csv    — comment_text + 6 binary label columns (toxic, severe_toxic, obscene, threat, insult, identity_hate)
+- data/test.csv     — comment_text only (no labels)
+- data/sample_submission.csv — expected submission format
+- baseline.py       — reference TF-IDF + LR baseline
+
+COMMANDS:
+- cat baseline.py            — read baseline
+- head -5 data/train.csv     — preview data
+- cat << 'ENDOFFILE' > train_and_predict.py ... ENDOFFILE — write script
+- python train_and_predict.py — run training + prediction
+- validate                   — score submission.csv (column-wise ROC AUC)
+- ls, head, wc -l, sed -i    — file utilities
+
+OUTPUT: submission.csv with columns: id, toxic, severe_toxic, obscene, threat, insult, identity_hate
+        Values = probabilities in [0, 1] for each comment.
+
+KEY STRATEGIES:
+1. TF-IDF features (word + char n-grams) + Logistic Regression per class (fast baseline ~0.96)
+2. Add char-level n-grams (3-6), increase vocab size
+3. Ensemble multiple models (LR, LinearSVC, NB)
+4. Try LightGBM or XGBoost on TF-IDF features
+5. Add text preprocessing (lowercase, remove special chars)
+6. BERT/DistilBERT for GPU runs (significant jump to ~0.985+)
+
+CRITICAL RULES:
+1. ONE command per response
+2. Read baseline.py before writing new code
+3. Always run python train_and_predict.py BEFORE validate
+4. submission.csv MUST have exact column order: id, toxic, severe_toxic, obscene, threat, insult, identity_hate
+
+MANDATORY WORKFLOW:
+1. cat baseline.py   (understand data + format)
+2. Write train_and_predict.py
+3. python train_and_predict.py
+4. validate""",
+        use_generic_conda=True,
+        needs_gpu=False,
+        step_timeout=900.0,
+        task_type="nlp",
+    ),
 }
 
 
 def get_task_profile(task_config: str) -> TaskProfile:
     """Auto-detect task from config path and return its profile."""
-    for key in TASK_PROFILES:
+    # Validate config file exists (resolve relative to MLGYM_PATH)
+    # MLGym's EnvironmentArguments prepends CONFIG_DIR (configs/), so
+    # "tasks/X.yaml" is valid as a task_config_path even though the file
+    # lives at configs/tasks/X.yaml on disk.
+    config_path = Path(task_config)
+    if not config_path.is_absolute():
+        config_path = MLGYM_PATH / task_config
+    if not config_path.exists():
+        # Also try under configs/ (MLGym convention)
+        alt = MLGYM_PATH / "configs" / task_config
+        if alt.exists():
+            config_path = alt
+        else:
+            parent = (MLGYM_PATH / "configs" / task_config).parent
+            if parent.exists():
+                available = sorted(p.stem for p in parent.glob("*.yaml"))
+                print(f"ERROR: Task config '{task_config}' not found.")
+                print(f"  Available configs: {', '.join(available)}")
+            raise FileNotFoundError(f"Task config not found: {config_path}")
+
+    # Sort by key length descending to match longest (most specific) key first
+    for key in sorted(TASK_PROFILES, key=len, reverse=True):
         if key.lower() in task_config.lower():
             return TASK_PROFILES[key]
     # Fallback to titanic
@@ -1160,6 +1253,7 @@ class ContainerManager:
         self.env: MLGymEnv | None = None
         self.baseline_score: float = 0.0
         self.baseline_scores_dict: dict = {}
+        self._eval_readonly_paths: list[tuple[str, Path]] = []  # (rel_path, host_src)
 
     def create(self):
         original_cwd = os.getcwd()
@@ -1203,9 +1297,11 @@ class ContainerManager:
                     "export PATH=/home/agent/miniconda3/envs/mlgym_generic/bin:$PATH",
                     timeout_duration=10,
                 )
+                # Only install if missing — skip if node has slow/no internet to avoid hanging
                 self.env.communicate(
-                    "pip install -q xgboost lightgbm catboost > /dev/null 2>&1 || true",
-                    timeout_duration=30,
+                    "python -c 'import xgboost' 2>/dev/null || "
+                    "timeout 30 pip install -q xgboost lightgbm catboost > /dev/null 2>&1 || true",
+                    timeout_duration=60,
                 )
                 check = self.env.communicate(
                     "python -c 'import torch, sklearn, xgboost; "
@@ -1217,10 +1313,75 @@ class ContainerManager:
 
             # cd into workspace
             self.env.communicate("cd /home/agent/workspace")
+
+            # Back up evaluation files so we can restore them before each validate call.
+            # This prevents agents from gaming scores by rewriting evaluate.py.
+            self._backup_eval_files()
+
             print(f"Container created. Baseline scores: {self.baseline_scores_dict}")
             print(f"Primary baseline ({self.task_profile.primary_metric if self.task_profile else '?'}): {self.baseline_score:.4f}")
         finally:
             os.chdir(original_cwd)
+
+    def _backup_eval_files(self):
+        """Record host-side source paths for evaluation files so we can overwrite before validate.
+
+        Instead of copying inside the container (vulnerable to symlink attacks), we store the
+        original file path on the host and write directly to the workspace bind-mount directory.
+        """
+        if not self.env:
+            return
+        try:
+            task_args = None
+            if hasattr(self.env, 'task') and hasattr(self.env.task, 'args'):
+                task_args = self.env.task.args
+            if task_args is None or not getattr(task_args, 'evaluation_read_only', False):
+                return
+            paths = getattr(task_args, 'evaluation_paths', [])
+            if not paths:
+                return
+            starter_code = getattr(task_args, 'starter_code', []) or []
+            for rel_path in paths:
+                host_src = None
+                for sc in starter_code:
+                    if str(sc).endswith(str(rel_path)):
+                        candidate = MLGYM_PATH / sc
+                        if candidate.exists():
+                            host_src = candidate
+                            break
+                if host_src is None:
+                    # Fallback: look for the file in the MLGym data directory
+                    task_name = getattr(task_args, 'task_name', '')
+                    candidate = MLGYM_PATH / "data" / task_name / rel_path
+                    if candidate.exists():
+                        host_src = candidate
+                if host_src is not None:
+                    self._eval_readonly_paths.append((str(rel_path), host_src))
+                    print(f"  [eval-guard] registered host source for {rel_path}: {host_src}")
+                else:
+                    print(f"  [eval-guard] WARNING: could not find host source for {rel_path}")
+        except Exception as e:
+            print(f"  [eval-guard] backup failed (non-fatal): {e}")
+
+    def _restore_eval_files(self):
+        """Overwrite evaluation files from the host, bypassing any container-side symlink tricks."""
+        if not self._eval_readonly_paths or not self.env:
+            return
+        try:
+            workspace_host_dir = Path(self.env.container_obj.workspace_host_dir)
+        except AttributeError:
+            return
+        for rel_path, host_src in self._eval_readonly_paths:
+            dst = workspace_host_dir / rel_path
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                # Remove symlink or existing file first so we write the real file
+                if dst.is_symlink() or dst.exists():
+                    dst.unlink()
+                shutil.copy2(str(host_src), str(dst))
+                print(f"  [eval-guard] restored {rel_path} from host")
+            except Exception as e:
+                print(f"  [eval-guard] restore failed for {rel_path}: {e}")
 
     def _load_commands(self):
         env = self.env
@@ -1241,6 +1402,9 @@ class ContainerManager:
         """Execute action, return (observation, info)."""
         if timeout is None:
             timeout = self.task_profile.step_timeout if self.task_profile else 120.0
+        # Restore evaluation files before validate to prevent gaming.
+        if action.strip().lower() in ("validate", "submit"):
+            self._restore_eval_files()
         obs, reward, done, info = self.env.step(action)
         obs = obs or "Action executed."
         # If the container restarted (timeout/crash), shell functions are lost.
@@ -1386,7 +1550,7 @@ class TreeSearch:
                  branching_factor: int = 3, max_depth: int = 2,
                  max_actions: int = 15, output_dir: str = "outputs/tree_search",
                  verbose: bool = False, verbalized_sampling: bool = True,
-                 sampling_mode: str = "tail"):
+                 sampling_mode: str = "tail", time_budget: int = 0):
         self.llm = llm
         self.container = container
         self.task = task_profile
@@ -1397,6 +1561,7 @@ class TreeSearch:
         self.verbose = verbose
         self.verbalized_sampling = verbalized_sampling
         self.sampling_mode = sampling_mode
+        self.time_budget = time_budget  # seconds, 0 = no limit
         self.nodes: dict[str, TreeNode] = {}
 
     def run(self) -> dict:
@@ -1414,12 +1579,24 @@ class TreeSearch:
 
         # BFS expansion
         frontier = [root.node_id]
+        stopped_by = "node_budget"
+        time_expired = False
         for depth in range(1, self.max_depth + 1):
+            if time_expired:
+                break
             print(f"\n{'=' * 60}")
             print(f"TREE SEARCH - Depth {depth} ({len(frontier)} nodes to expand)")
             print("=" * 60)
             next_frontier = []
             for nid in frontier:
+                # Check time budget before each branch expansion
+                if self.time_budget > 0:
+                    elapsed = time.time() - start
+                    if elapsed >= self.time_budget:
+                        print(f"\n--- Time budget reached ({elapsed:.0f}s >= {self.time_budget}s). Stopping. ---")
+                        stopped_by = "time_budget"
+                        time_expired = True
+                        break
                 node = self.nodes[nid]
                 if node.score is None:
                     print(f"  Skipping {nid} (no score)")
@@ -1450,6 +1627,9 @@ class TreeSearch:
             "improvement": best_score - self.container.baseline_score,
             "total_nodes": len(self.nodes),
             "elapsed_seconds": round(elapsed, 1),
+            "node_budget": self.branching_factor * self.max_depth,
+            "time_budget_seconds": self.time_budget,
+            "stopped_by": stopped_by,
             "nodes": {nid: {
                 "node_id": n.node_id,
                 "parent_id": n.parent_id,
@@ -1800,6 +1980,8 @@ def main():
     parser.add_argument("--branching-factor", type=int, default=3)
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--max-actions", type=int, default=15)
+    parser.add_argument("--time-budget", type=int, default=0,
+                        help="Max seconds for search (0 = no limit). Stops when either node or time budget is exhausted.")
     parser.add_argument("--env-gpu", default="7")
     parser.add_argument("--no-gpu", action="store_true",
                         help="Run without GPU (CPU only). Passes devices=['cpu'] to MLGym, "
@@ -1827,7 +2009,8 @@ def main():
     print("=" * 60)
     print(f"Model: {args.model}")
     print(f"Branching: {args.branching_factor}, Depth: {args.max_depth}")
-    print(f"Max actions/node: {args.max_actions}")
+    time_str = f"{args.time_budget}s" if args.time_budget > 0 else "unlimited"
+    print(f"Max actions/node: {args.max_actions}, Time budget: {time_str}")
     print(f"Temperature: {args.temperature}")
     print(f"Verbalized sampling: {use_vs}" + (f" (mode: {args.sampling_mode})" if use_vs else ""))
     print(f"Primary metric: {task_profile.primary_metric} ({'higher' if task_profile.higher_is_better else 'lower'} is better)")
@@ -1852,6 +2035,7 @@ def main():
         verbose=args.verbose,
         verbalized_sampling=use_vs,
         sampling_mode=args.sampling_mode,
+        time_budget=args.time_budget,
     )
 
     try:
