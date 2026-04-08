@@ -959,8 +959,9 @@ MANDATORY WORKFLOW:
             "TASK: Predict toxicity probabilities for Wikipedia comments.\n"
             "Files: data/train.csv (labeled), data/test.csv (unlabeled), data/sample_submission.csv\n"
             "Output: submission.csv with columns: id, toxic, severe_toxic, obscene, threat, insult, identity_hate\n\n"
-            "Baseline (TF-IDF + LR per class) scores ~0.96 ROC AUC. Top solutions reach ~0.9886.\n"
-            "Try: better text features (char n-grams), ensembling, transformers (BERT), calibration.\n\n"
+            "Baseline (TF-IDF + LR per class) scores ~0.96 ROC AUC. Top sklearn solutions reach ~0.988.\n"
+            "Try: char n-grams (3-6), larger vocab, LR+LinearSVC+NB ensembles, LightGBM on TF-IDF.\n"
+            "IMPORTANT: Only sklearn/scipy/numpy/pandas available — no transformers/torch.\n\n"
             "Write train_and_predict.py now (cat << 'ENDOFFILE' > train_and_predict.py):"
         ),
         system_prompt="""You are an ML engineering agent. Output ONLY ONE command per response. No explanations.
@@ -984,19 +985,24 @@ COMMANDS:
 OUTPUT: submission.csv with columns: id, toxic, severe_toxic, obscene, threat, insult, identity_hate
         Values = probabilities in [0, 1] for each comment.
 
-KEY STRATEGIES:
-1. TF-IDF features (word + char n-grams) + Logistic Regression per class (fast baseline ~0.96)
-2. Add char-level n-grams (3-6), increase vocab size
-3. Ensemble multiple models (LR, LinearSVC, NB)
-4. Try LightGBM or XGBoost on TF-IDF features
-5. Add text preprocessing (lowercase, remove special chars)
-6. BERT/DistilBERT for GPU runs (significant jump to ~0.985+)
+AVAILABLE PACKAGES (use ONLY these — no internet, no pip install):
+- sklearn, scipy, numpy, pandas (standard conda env)
+- lightgbm, xgboost (may be present)
+DO NOT USE: transformers, torch, tensorflow, keras, sentence_transformers, spacy, nltk (NOT installed)
+
+KEY STRATEGIES (sklearn-only, in order of preference):
+1. TF-IDF (word + char n-grams, 50k-200k vocab) + LogisticRegression per class (~0.96)
+2. Add char-level n-grams (3-6 chars), increase max_features
+3. Ensemble: LR + LinearSVC + MultinomialNB with averaged probabilities
+4. LightGBM or XGBoost on TF-IDF features (if available)
+5. Better preprocessing: lowercase, strip punctuation, remove numbers
 
 CRITICAL RULES:
 1. ONE command per response
 2. Read baseline.py before writing new code
 3. Always run python train_and_predict.py BEFORE validate
 4. submission.csv MUST have exact column order: id, toxic, severe_toxic, obscene, threat, insult, identity_hate
+5. NEVER import transformers, torch, tensorflow, or any deep learning library
 
 MANDATORY WORKFLOW:
 1. cat baseline.py   (understand data + format)
@@ -1408,10 +1414,15 @@ class ContainerManager:
         obs, reward, done, info = self.env.step(action)
         obs = obs or "Action executed."
         # If the container restarted (timeout/crash), shell functions are lost.
-        # Reload commands and restore working directory.
+        # Reload commands, restore working directory, and re-activate conda env.
         if "RESTARTING PROCESS" in obs:
             self._load_commands()
             self.env.communicate("cd /home/agent/workspace")
+            if self.task_profile and self.task_profile.use_generic_conda:
+                self.env.communicate(
+                    "export PATH=/home/agent/miniconda3/envs/mlgym_generic/bin:$PATH",
+                    timeout_duration=10,
+                )
         return obs, info
 
     def communicate(self, cmd: str, timeout: float = 30.0) -> str:
@@ -1424,7 +1435,13 @@ class ContainerManager:
         return snap
 
     def restore_snapshot(self, snap_path: str):
-        self.communicate("cd /home/agent && rm -rf workspace")
+        # Clear workspace CONTENTS without removing the directory itself.
+        # Using rm -rf workspace would delete the apptainer bind-mount point,
+        # causing tar to extract into the tmpfs overlay instead of the bound
+        # host directory — leaving the agent with an empty visible workspace.
+        self.communicate(
+            "find /home/agent/workspace -mindepth 1 -delete 2>/dev/null || true"
+        )
         self.communicate(f"cd /home/agent && tar xf {snap_path}")
         self.communicate("cd /home/agent/workspace")
         self.env.current_step = 0  # reset step counter
