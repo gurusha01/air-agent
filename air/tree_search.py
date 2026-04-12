@@ -34,6 +34,48 @@ from openai import OpenAI
 
 from mlgym.environment.env import EnvironmentArguments, MLGymEnv
 
+
+def generate_code_outline(host_path: str, max_lines: int = 200) -> str:
+    """Return a compact outline of a Python file: class/def lines with line numbers.
+
+    Used to inject a table-of-contents for large baseline scripts so the executor
+    can navigate via `goto <line>` without cat-ing the whole file.
+    Returns empty string if the file is missing or smaller than 50 lines (outline
+    adds no value for tiny files).
+    """
+    try:
+        if not host_path or not Path(host_path).is_file():
+            return ""
+        src = Path(host_path).read_text()
+        lines = src.splitlines()
+        if len(lines) < 50:
+            return ""
+        outline_lines = []
+        for i, line in enumerate(lines, start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("class ") or stripped.startswith("def "):
+                indent = len(line) - len(stripped)
+                prefix = "  " + " " * indent
+                # strip trailing : and function body
+                sig = stripped.rstrip()
+                if sig.endswith(":"):
+                    sig = sig[:-1]
+                outline_lines.append(f"{prefix}L{i:<5d} {sig}")
+            if len(outline_lines) >= max_lines:
+                outline_lines.append(f"  ... (outline truncated at {max_lines} entries)")
+                break
+        if not outline_lines:
+            return ""
+        total = len(lines)
+        header = f"=== {Path(host_path).name} outline ({total} lines total — use `goto <line>` to jump) ===\n"
+        footer = (
+            "\n=== end outline ===\n"
+            "After editing, regenerate with: grep -nE '^class |^def |^    def ' " + Path(host_path).name
+        )
+        return header + "\n".join(outline_lines) + footer
+    except Exception:
+        return ""
+
 MLGYM_PATH = Path(__file__).resolve().parents[2] / "MLGym"
 
 
@@ -57,6 +99,7 @@ class TaskProfile:
     needs_gpu: bool = False         # True for RL tasks that need GPU for training
     step_timeout: float = 120.0    # seconds; RL tasks need 1800+ for training
     task_type: str = "classification"  # classification, regression, rl, game_theory
+    starter_code_host_path: str = ""  # optional host path for generating {code_outline}
     target_column: str = ""            # e.g., "Survived", "SalePrice"
     id_column: str = ""                # e.g., "PassengerId", "Id"
 
@@ -263,58 +306,36 @@ ENDOFFILE
         system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
 
 EDITING FILES:
-- For config changes: sed -i 's/old/new/g' src/config.yaml
-- For code changes: use python -c to make modifications.
-  IMPORTANT: python -c does NOT modify any file by itself. It only runs code in memory.
-  To actually change a file, you must read it, modify it, and write it back within python -c.
-  Before writing, always compile() your new code first to catch syntax errors.
-  If compile() fails, fix the error and try again — do NOT write broken code to files.
-- For large rewrites: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+- Config changes: sed -i 's/old/new/g' src/config.yaml
+- Code changes: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+  WARNING: python -c "..." DOES NOT WORK for multi-line code in this shell. Use heredoc instead.
+- Single-line substitutions: sed -i 's/old_line/new_line/g' src/filename.py
 
 COMMANDS:
-- sed -i 's/old/new/g' file - Config substitutions
-- python -c "..." - Test and apply code changes
-- cat << 'ENDOFFILE' > file ... ENDOFFILE - Full file rewrite
-- python src/train.py - Train the PPO agent
-- validate - Evaluate checkpoints (ONLY after training completes)
-- cat, ls, head - View files
+- cat src/file - Read a file
+- sed -i 's/old/new/g' file - In-place substitution
+- cat << 'ENDOFFILE' > file ... ENDOFFILE - Write/rewrite a file
+- python src/train.py - Train the PPO agent (takes ~20-30 min, produces checkpoints/)
+- validate - Score the checkpoints (ONLY after training completes)
 
 CRITICAL RULES:
-1. ONE command per response
-2. ALWAYS run 'python src/train.py' BEFORE 'validate'
-3. You can modify ANY file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
-4. The class name 'Model' in networks.py must NOT be changed (evaluation depends on it)
-5. You MUST read existing source files BEFORE writing any modifications
-6. rm -rf checkpoints before re-training
-7. When modifying .py files, always verify with compile() before writing
+1. ONE command per response. No explanations.
+2. ALWAYS run 'python src/train.py' BEFORE 'validate'. validate reads checkpoints/ — if you haven't trained, it will fail.
+3. The class name 'Model' in networks.py MUST NOT be changed.
+4. Do NOT rm -rf checkpoints unless you are about to retrain immediately after.
+5. Do NOT use python -c "..." for multi-line code — it fails in this shell. Use heredoc.
 
-CRITICAL: The src/ directory and all source files ALREADY EXIST and the code ALREADY WORKS.
-Do NOT use mkdir. Do NOT rewrite entire files with cat << ENDOFFILE. Do NOT pip install.
+AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability. Do NOT pip install anything.
+NOTE: distrax is NOT installed. Use tensorflow_probability.substrates.jax (already imported in networks.py).
 
-HOW TO EDIT FILES:
-- Config: sed -i 's/old_value/new_value/g' src/config.yaml
-- Code (single line): sed -i 's/old_line/new_line/g' src/filename.py
-- Code (multi-line): python -c "
-import pathlib
-p = pathlib.Path('src/filename.py')
-code = p.read_text()
-code = code.replace('old_code', 'new_code')
-compile(code, 'test', 'exec')
-p.write_text(code)
-"
-
-MANDATORY WORKFLOW — follow this EXACT order, no exceptions:
-1. cat src/config.yaml  (understand current settings)
-2. Make your changes using sed -i or python -c (max 5 edits)
-3. rm -rf checkpoints
-4. python src/train.py  (MUST run training before validate)
+MANDATORY WORKFLOW — follow this EXACT order:
+1. cat src/config.yaml       (understand current hyperparameters)
+2. cat src/networks.py       (understand the model)
+3. sed -i / heredoc edits    (make your improvements — keep it to 1-3 changes max)
+4. python src/train.py       (MUST train before validate — takes ~20-30 min)
 5. validate
 
-You MUST reach step 4 (python src/train.py) within your first 10 actions. If you spend more than 5 actions editing, STOP editing and run training.
-
-WORKSPACE: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
-PACKAGES: jax, flax, gymnax, optax, numpy, distrax, tensorflow_probability
-ONE command per response. No explanations.""",
+YOU MUST RUN python src/train.py BY ACTION 8 AT THE LATEST. Do not spend more than 5 actions on reading/editing.""",
         use_generic_conda=False,
         needs_gpu=True,
         step_timeout=2400.0,
@@ -355,44 +376,36 @@ ONE command per response. No explanations.""",
         system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
 
 EDITING FILES:
-- For config changes: sed -i 's/old/new/g' src/config.yaml
-- For code changes: use python -c to make modifications.
-  Before writing, always compile() your new code first to catch syntax errors.
-- For large rewrites: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+- Config changes: sed -i 's/old/new/g' src/config.yaml
+- Code changes: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+  WARNING: python -c "..." DOES NOT WORK for multi-line code in this shell. Use heredoc instead.
+- Single-line substitutions: sed -i 's/old_line/new_line/g' src/filename.py
 
 COMMANDS:
-- sed -i 's/old/new/g' file - Config substitutions
-- python -c "..." - Test and apply code changes
-- cat << 'ENDOFFILE' > file ... ENDOFFILE - Full file rewrite
-- python src/train.py - Train the agent
-- validate - Evaluate checkpoints (ONLY after training completes)
-- cat, ls, head - View files
+- cat src/file - Read a file
+- sed -i 's/old/new/g' file - In-place substitution
+- cat << 'ENDOFFILE' > file ... ENDOFFILE - Write/rewrite a file
+- python src/train.py - Train the agent (takes ~20-30 min, produces checkpoints/)
+- validate - Score the checkpoints (ONLY after training completes)
 
 CRITICAL RULES:
-1. ONE command per response
-2. ALWAYS run 'python src/train.py' BEFORE 'validate'
-3. The class name 'Model' in networks.py must NOT be changed
-4. You MUST read existing source files BEFORE writing any modifications
-5. rm -rf checkpoints before re-training
-6. When modifying .py files, always verify with compile() before writing
+1. ONE command per response. No explanations.
+2. ALWAYS run 'python src/train.py' BEFORE 'validate'. validate reads checkpoints/ — if you haven't trained, it will fail.
+3. The class name 'Model' in networks.py MUST NOT be changed.
+4. Do NOT rm -rf checkpoints unless you are about to retrain immediately after.
+5. Do NOT use python -c "..." for multi-line code — it fails in this shell. Use heredoc.
 
-AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, distrax. Do NOT pip install anything.
+AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability. Do NOT pip install anything.
+NOTE: distrax is NOT installed. Use tensorflow_probability.substrates.jax (already imported in networks.py).
 
-WORKSPACE:
-- src/config.yaml - Hyperparameters
-- src/networks.py - Actor-Critic model
-- src/policy.py - Training loop, rollout manager, loss functions
-- src/train.py - Entry point
-- src/helpers.py - Config loading, pickle save/load
+MANDATORY WORKFLOW — follow this EXACT order:
+1. cat src/config.yaml       (understand current hyperparameters)
+2. cat src/networks.py       (understand the model)
+3. sed -i / heredoc edits    (make your improvements — keep it to 1-3 changes max)
+4. python src/train.py       (MUST train before validate — takes ~20-30 min)
+5. validate
 
-MANDATORY WORKFLOW:
-1. cat src/networks.py  (READ first)
-2. cat src/policy.py
-3. cat src/train.py
-4. Make modifications
-5. rm -rf checkpoints
-6. python src/train.py
-7. validate""",
+YOU MUST RUN python src/train.py BY ACTION 8 AT THE LATEST. Do not spend more than 5 actions on reading/editing.""",
         use_generic_conda=False,
         needs_gpu=True,
         step_timeout=2400.0,
@@ -433,44 +446,36 @@ MANDATORY WORKFLOW:
         system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
 
 EDITING FILES:
-- For config changes: sed -i 's/old/new/g' src/config.yaml
-- For code changes: use python -c to make modifications.
-  Before writing, always compile() your new code first to catch syntax errors.
-- For large rewrites: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+- Config changes: sed -i 's/old/new/g' src/config.yaml
+- Code changes: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+  WARNING: python -c "..." DOES NOT WORK for multi-line code in this shell. Use heredoc instead.
+- Single-line code substitutions: sed -i 's/old_line/new_line/g' src/filename.py
 
 COMMANDS:
-- sed -i 's/old/new/g' file - Config substitutions
-- python -c "..." - Test and apply code changes
-- cat << 'ENDOFFILE' > file ... ENDOFFILE - Full file rewrite
-- python src/train.py - Train the PPO agent
-- validate - Evaluate checkpoints (ONLY after training completes)
-- cat, ls, head - View files
+- cat src/file - Read a file
+- sed -i 's/old/new/g' file - In-place substitution
+- cat << 'ENDOFFILE' > file ... ENDOFFILE - Write/rewrite a file
+- python src/train.py - Train the PPO agent (takes ~20-30 min, produces checkpoints/)
+- validate - Score the checkpoints (ONLY after training completes)
 
 CRITICAL RULES:
-1. ONE command per response
-2. ALWAYS run 'python src/train.py' BEFORE 'validate'
-3. The class name 'Model' in networks.py must NOT be changed
-4. You MUST read existing source files BEFORE writing any modifications
-5. rm -rf checkpoints before re-training
-6. When modifying .py files, always verify with compile() before writing
+1. ONE command per response. No explanations.
+2. ALWAYS run 'python src/train.py' BEFORE 'validate'. validate reads checkpoints/ — if you haven't trained, it will fail.
+3. The class name 'Model' in networks.py MUST NOT be changed.
+4. Do NOT rm -rf checkpoints unless you are about to retrain immediately after.
+5. Do NOT use python -c "..." for multi-line code — it fails in this shell. Use heredoc.
 
-AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, distrax. Do NOT pip install anything.
+AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability. Do NOT pip install anything.
+NOTE: distrax is NOT installed. Use tensorflow_probability.substrates.jax (already imported in networks.py).
 
-WORKSPACE:
-- src/config.yaml - Hyperparameters
-- src/networks.py - Actor-Critic model (CNN for MinAtar observation space)
-- src/policy.py - PPO training loop, rollout manager, loss functions
-- src/train.py - Entry point
-- src/helpers.py - Config loading, pickle save/load
+MANDATORY WORKFLOW — follow this EXACT order:
+1. cat src/config.yaml       (understand current hyperparameters)
+2. cat src/networks.py       (understand the model)
+3. sed -i / heredoc edits    (make your improvements — keep it to 1-3 changes max)
+4. python src/train.py       (MUST train before validate — takes ~20-30 min)
+5. validate
 
-MANDATORY WORKFLOW:
-1. cat src/networks.py  (READ first)
-2. cat src/policy.py
-3. cat src/train.py
-4. Make modifications
-5. rm -rf checkpoints
-6. python src/train.py
-7. validate""",
+YOU MUST RUN python src/train.py BY ACTION 8 AT THE LATEST. Do not spend more than 5 actions on reading/editing.""",
         use_generic_conda=False,
         needs_gpu=True,
         step_timeout=2400.0,
@@ -490,7 +495,7 @@ MANDATORY WORKFLOW:
             "You can modify any file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py.\n"
             "IMPORTANT: You MUST read the existing code first before writing ANY modifications.\n"
             "IMPORTANT: Do NOT rewrite entire files. Make TARGETED edits using sed -i.\n"
-            "Output your first command (cat src/networks.py):"
+            "Output your first command (cat src/config.yaml):"
         ),
         root_task_desc=(
             "MetaMaze-misc — RL PPO Training.\n"
@@ -499,61 +504,45 @@ MANDATORY WORKFLOW:
             "Obs: local receptive field + last action + last reward + timestep.\n"
             "Actions: 4 discrete (up/right/down/left). Reward: +10 on goal. Episode: 200 steps.\n\n"
             "Current config:\n{data_head}\n\n"
-            "Source files: src/train.py, src/networks.py, src/policy.py, src/helpers.py, src/config.yaml\n"
-            "You can modify any of these files.\n\n"
-            "IMPORTANT: You MUST read the existing source code BEFORE making any changes.\n"
-            "Your first 3 commands MUST be:\n"
-            "  1. cat src/networks.py\n"
-            "  2. cat src/policy.py\n"
-            "  3. cat src/train.py\n"
-            "Only AFTER reading all 3 files should you start modifying code.\n\n"
-            "Goal: Maximize mean reward. Output your first command (cat src/networks.py):"
+            "Source files: src/train.py, src/networks.py, src/policy.py, src/helpers.py, src/config.yaml\n\n"
+            "MANDATORY: Your first command MUST be cat src/config.yaml.\n"
+            "Then make 1-3 targeted changes, then run python src/train.py.\n"
+            "YOU MUST run python src/train.py by action 8 at the latest.\n\n"
+            "Goal: Maximize mean reward. Output your first command (cat src/config.yaml):"
         ),
         system_prompt="""You are an RL research agent. Output ONLY ONE command per response. No explanations.
 
 EDITING FILES:
-- For config changes: sed -i 's/old/new/g' src/config.yaml
-- For code changes: use python -c to make modifications.
-  IMPORTANT: python -c does NOT modify any file by itself. It only runs code in memory.
-  To actually change a file, you must read it, modify it, and write it back within python -c.
-  Before writing, always compile() your new code first to catch syntax errors.
-  If compile() fails, fix the error and try again — do NOT write broken code to files.
-- For large rewrites: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+- Config changes: sed -i 's/old/new/g' src/config.yaml
+- Code changes: cat << 'ENDOFFILE' > src/filename.py ... ENDOFFILE
+  WARNING: python -c "..." DOES NOT WORK for multi-line code in this shell. Use heredoc instead.
+- Single-line code substitutions: sed -i 's/old_line/new_line/g' src/filename.py
 
 COMMANDS:
-- sed -i 's/old/new/g' file - Config substitutions
-- python -c "..." - Test and apply code changes
-- cat << 'ENDOFFILE' > file ... ENDOFFILE - Full file rewrite
-- python src/train.py - Train the PPO agent
-- validate - Evaluate checkpoints (ONLY after training completes)
-- cat, ls, head - View files
+- cat src/file - Read a file
+- sed -i 's/old/new/g' file - In-place substitution
+- cat << 'ENDOFFILE' > file ... ENDOFFILE - Write/rewrite a file
+- python src/train.py - Train the PPO agent (takes ~20-30 min, produces checkpoints/)
+- validate - Score the checkpoints (ONLY after training completes)
 
 CRITICAL RULES:
-1. ONE command per response
-2. ALWAYS run 'python src/train.py' BEFORE 'validate'
-3. You can modify ANY file: src/config.yaml, src/networks.py, src/policy.py, src/train.py, src/helpers.py
-4. The class name 'Model' in networks.py must NOT be changed (evaluation depends on it)
-5. You MUST read existing source files BEFORE writing any modifications
-6. rm -rf checkpoints before re-training
-7. When modifying .py files, always verify with compile() before writing
+1. ONE command per response. No explanations.
+2. ALWAYS run 'python src/train.py' BEFORE 'validate'. validate reads checkpoints/ — if you haven't trained, it will fail.
+3. The class name 'Model' in networks.py MUST NOT be changed.
+4. Do NOT rm -rf checkpoints unless you are about to retrain immediately after.
+5. Do NOT use python -c "..." for multi-line code — it fails in this shell. Use heredoc.
 
-AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability (tfp). Do NOT pip install anything.
+AVAILABLE PACKAGES: jax, flax, gymnax, optax, numpy, tensorflow_probability. Do NOT pip install anything.
+NOTE: distrax is NOT installed. Use tensorflow_probability.substrates.jax (already imported in networks.py).
 
-WORKSPACE:
-- src/config.yaml - Hyperparameters (train_config with nested keys)
-- src/networks.py - Actor-Critic model (class Model, get_model_ready function)
-- src/policy.py - PPO training loop, rollout manager, loss functions
-- src/train.py - Entry point (loads config, calls train_ppo)
-- src/helpers.py - Config loading, pickle save/load
+MANDATORY WORKFLOW — follow this EXACT order:
+1. cat src/config.yaml       (understand current hyperparameters)
+2. cat src/networks.py       (understand the model)
+3. sed -i / heredoc edits    (make your improvements — keep it to 1-3 changes max)
+4. python src/train.py       (MUST train before validate — takes ~20-30 min)
+5. validate
 
-MANDATORY WORKFLOW (follow this EXACT order):
-1. cat src/networks.py  (READ existing code first)
-2. cat src/policy.py    (READ existing code)
-3. cat src/train.py     (READ existing code)
-4. Make modifications (verify with compile() before writing)
-5. rm -rf checkpoints
-6. python src/train.py
-7. validate""",
+YOU MUST RUN python src/train.py BY ACTION 8 AT THE LATEST. Do not spend more than 5 actions on reading/editing.""",
         use_generic_conda=False,
         needs_gpu=True,
         step_timeout=2400.0,
@@ -619,6 +608,8 @@ WORKSPACE:
 - sample_submission.csv - Submission format example
 - Output: submission.csv with predicted labels
 
+DO NOT modify evaluate.py — it is read-only and will be restored before evaluation. Your submission.csv must contain predictions from an actual trained model on the test data.
+
 MANDATORY WORKFLOW:
 1. cat << 'ENDOFFILE' > train_and_predict.py
 <complete python script>
@@ -634,14 +625,15 @@ ENDOFFILE
         higher_is_better=False,
         script_name="baseline.py",
         submission_file=None,  # model.pt + model_config.pt, not CSV
+        starter_code_host_path="/home/jarnav/MLScientist/MLGym/data/languageModelingFineWeb/baseline.py",
         data_head_cmd=None,
         strategy_topic="language model training (GPT-2 style on FineWeb, minimize validation loss)",
         branch_write_instruction=(
             "Modify baseline.py to improve the model, then run "
-            "'torchrun --nproc_per_node=$(nvidia-smi --list-gpus | wc -l) --standalone baseline.py', "
-            "then 'validate'.\n"
-            "You MUST read baseline.py first before making any changes.\n"
-            "Output your first command (cat baseline.py):"
+            "'torchrun --nproc_per_node=1 --standalone baseline.py' to train, "
+            "then type the literal word 'validate' (NOT 'torchrun evaluate.py') to evaluate.\n"
+            "You MUST read baseline.py first before making any changes. Use `open baseline.py` — do NOT use `cat`.\n"
+            "Output your first command (suggest: open baseline.py):"
         ),
         root_task_desc=(
             "Language Modeling — GPT-2 on FineWeb.\n"
@@ -650,27 +642,50 @@ ENDOFFILE
             "Architecture: 12 transformer layers, 6 heads, 768 embedding dim, RoPE, RMSNorm, ReLU^2.\n"
             "Three optimizers: Adam for embeddings (lr=0.3), Adam for LM head (lr=0.002), Muon for transformer blocks (lr=0.02).\n"
             "Training: 500 iterations, batch_size=512, seq_len=1024, bfloat16, torch.compile, DDP.\n\n"
-            "Files: baseline.py (training script), evaluate.py (read-only evaluation).\n"
+            "Files: baseline.py (511 lines, 22KB), evaluate.py (read-only).\n"
             "Submission: model.pt (state_dict) + model_config.pt (pickle config).\n\n"
-            "Goal: Minimize val_loss. Read baseline.py first, then modify and train.\n\n"
-            "Output your first command (cat baseline.py):"
+            "{code_outline}\n\n"
+            "Goal: Minimize val_loss. Use `open baseline.py <line>` + `goto` to read specific sections, then `edit` to modify.\n\n"
+            "Output your first command:"
         ),
-        system_prompt="""You are an ML research agent. Output ONLY ONE command per response. No explanations.
+        system_prompt="""You are an ML research agent. Output ONLY ONE shell command per response.
+
+=== RESPONSE FORMAT RULES (CRITICAL — violations waste action budget) ===
+- Output EXACTLY ONE valid shell command. Nothing else. No prose. No commentary. No "Now I will...", "Let me...", "Perfect!", "Excellent!", "Based on...", "The results show...".
+- The first character of your response must be the start of a runnable shell command.
+- Do NOT include reasoning, analysis, or explanations — those go in your internal thought, NOT in the output.
+- Bad examples (these all get sent to bash and fail):
+  ❌ "Now let me train the model: torchrun ..."  → bash sees "Now" as a command
+  ❌ "Perfect! The edit is applied. Now running training."  → bash sees "Perfect!" as a command
+  ❌ "Based on the results, I'll try..."  → bash sees "Based" as a command
+- Good examples:
+  ✅ open baseline.py 193
+  ✅ torchrun --nproc_per_node=1 --standalone baseline.py
+  ✅ validate
 
 TASK: Train a GPT-2 style language model on FineWeb. Minimize validation loss.
 
 WORKSPACE FILES:
 - baseline.py — Full training script (modded-nanogpt, distributed PyTorch)
-- evaluate.py — Evaluation script (READ-ONLY, do not modify)
+- evaluate.py — Evaluation script (READ-ONLY, do not modify, do not run directly)
 
-COMMANDS:
-- cat baseline.py — Read the training script
-- sed -i 's/old/new/g' baseline.py — Make targeted edits
-- python -c "..." — Programmatic edits (read, modify, compile-check, write)
-- cat << 'ENDOFFILE' > baseline.py ... ENDOFFILE — Full file rewrite
-- torchrun --nproc_per_node=$(nvidia-smi --list-gpus | wc -l) --standalone baseline.py — Train
-- validate — Evaluate (ONLY after training produces model.pt)
-- ls, head — View files
+COMMANDS (use these windowed tools — do NOT cat the whole 22KB baseline.py, it will blow context):
+- open baseline.py [line_number] — Opens file in ~100-line window. Preferred over cat.
+- goto <line> — Jump the open window to a specific line
+- scroll_down, scroll_up — Move the window
+- search_file <term> — Grep inside the currently open file (shows matching lines)
+- search_dir <term> — Grep a directory
+- find_file <name> — Locate a file
+- edit <start>:<end>\\n<new_code>\\nend_of_edit — Replace line range with new code (lint-checked)
+- sed -i 's/old/new/g' baseline.py — Simple targeted edits (for one-liners)
+- torchrun --nproc_per_node=1 --standalone baseline.py — Train
+- validate — Evaluate (ONLY after training produces model_config.pt)
+- ls — List directory
+
+SCORING: Your final score is recorded ONLY by the literal `validate` command — other evaluation attempts will not be recorded.
+
+AVOID: `cat baseline.py` (22KB, fills context), `python -c "..."` for reading (same issue).
+PREFER: `open baseline.py` + `goto 200` + `scroll_down` to navigate. `search_file 'class Block'` to jump to a class.
 
 TUNABLE KNOBS IN baseline.py:
 - Hyperparameters dataclass: num_iterations, warmup_iters, warmdown_iters, weight_decay, device_batch_size, sequence_length
@@ -680,18 +695,27 @@ TUNABLE KNOBS IN baseline.py:
 - Activation function (currently relu^2), normalization, attention config
 
 CRITICAL RULES:
-1. ONE command per response
-2. ALWAYS read baseline.py BEFORE modifying it
+1. ONE shell command per response. NEVER prose.
+2. ALWAYS read baseline.py BEFORE modifying it (use `open`, not `cat`)
 3. ALWAYS run training BEFORE validate
-4. Training command: torchrun --nproc_per_node=$(nvidia-smi --list-gpus | wc -l) --standalone baseline.py
-5. Do NOT modify evaluate.py
-6. When modifying code with python -c, always compile() before writing to catch syntax errors
+4. Training command: torchrun --nproc_per_node=1 --standalone baseline.py
+5. Do NOT modify evaluate.py, do NOT run `torchrun evaluate.py` or `python evaluate.py`
+6. Scoring: the ONLY way to record a score is the literal `validate` command. Manual evaluate.py runs are NOT counted.
+7. When modifying code with python -c, always compile() before writing to catch syntax errors
+8. Commit early: as soon as `validate` returns a valid score (even if worse than baseline), the node is done. Do not try to beat baseline within a single node — that's the scientist's job across nodes.
+
+TIMING:
+- The baseline configuration (500 iterations, 12 layers, 768 dim, batch 512) trains in ~4 minutes on this hardware.
+- torchrun has a 40-minute hard timeout. If training exceeds 40 min, it gets killed and model_config.pt is NOT saved → FAILED node.
+- After EVERY torchrun, run `ls model_config.pt` to verify the file exists BEFORE validating.
 
 MANDATORY WORKFLOW:
-1. cat baseline.py  (READ first)
-2. Make targeted modifications (sed -i or python -c)
-3. torchrun --nproc_per_node=$(nvidia-smi --list-gpus | wc -l) --standalone baseline.py
-4. validate""",
+1. open baseline.py  (READ first, windowed)
+2. Navigate with goto/scroll_up/scroll_down/search_file to understand relevant sections
+3. Make targeted modifications (edit <start>:<end>, sed -i, or python -c)
+4. torchrun --nproc_per_node=1 --standalone baseline.py
+5. ls model_config.pt  (verify file was saved)
+6. validate""",
         use_generic_conda=True,
         needs_gpu=True,
         step_timeout=2400.0,
@@ -794,9 +818,9 @@ MANDATORY WORKFLOW:
         name="Iterated Prisoner's Dilemma",
         primary_metric="Score",
         higher_is_better=True,
-        script_name="train_and_predict.py",
-        submission_file="submission.csv",
-        data_head_cmd="ls /home/agent/workspace/",
+        script_name="strategy.py",
+        submission_file=None,  # no CSV — validate imports strategy.py directly
+        data_head_cmd=None,
         strategy_topic="the Iterated Prisoner's Dilemma (design a strategy to maximize cumulative score against unknown opponents)",
         branch_write_instruction="Write a complete strategy script, then run it, then 'validate'.\nOutput your first command:",
         root_task_desc=(
@@ -804,9 +828,9 @@ MANDATORY WORKFLOW:
             "Baseline Score: {baseline_score}\n\n"
             "Data preview:\n{data_head}\n\n"
             "Goal: Design a strategy for iterated PD (cooperate=0, defect=1). Maximize total score.\n\n"
-            "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
+            "Write strategy.py now (use cat << 'ENDOFFILE' > strategy.py):"
         ),
-        system_prompt="You are a game theory agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        system_prompt="You are a game theory agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.\nDO NOT modify evaluate.py or target.py — they are read-only and will be restored before evaluation. ONLY modify strategy.py.",
         use_generic_conda=True,
         needs_gpu=False,
         task_type="game_theory",
@@ -848,7 +872,7 @@ MANDATORY WORKFLOW:
             "Goal: Train an image captioning model. Maximize BLEU score on test set.\n\n"
             "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
         ),
-        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.\nDO NOT modify evaluate.py — it is read-only and will be restored before evaluation.",
         use_generic_conda=True,
         needs_gpu=True,
         task_type="vision_nlp",
@@ -867,9 +891,11 @@ MANDATORY WORKFLOW:
             "Baseline accuracy: {baseline_score:.4f}\n\n"
             "Data preview:\n{data_head}\n\n"
             "Goal: Train a classifier for CIFAR-10 (10 classes, 32x32 color images). Maximize accuracy.\n\n"
+            "IMPORTANT: Load data via HuggingFace `from datasets import load_dataset; ds = load_dataset('uoft-cs/cifar10')`. "
+            "The container has NO internet — torchvision.datasets.CIFAR10(download=True) will FAIL.\n\n"
             "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
         ),
-        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.\nDO NOT modify evaluate.py — it is read-only and will be restored before evaluation.\nLoad CIFAR-10 from HuggingFace: load_dataset('uoft-cs/cifar10'). Do NOT use torchvision.datasets — no internet access.",
         use_generic_conda=True,
         needs_gpu=False,
         task_type="vision",
@@ -890,7 +916,7 @@ MANDATORY WORKFLOW:
             "Goal: Classify CIFAR-10 images. Maximize accuracy.\n\n"
             "Write train_and_predict.py now (use cat << 'ENDOFFILE' > train_and_predict.py):"
         ),
-        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.",
+        system_prompt="You are an ML research agent. Output ONLY ONE command per response. No explanations.\nAvailable: cat, python, validate.\nDO NOT modify evaluate.py — it is read-only and will be restored before evaluation. Your submission.csv must contain predictions from an actual trained model.",
         use_generic_conda=True,
         needs_gpu=False,
         task_type="vision",
@@ -1014,7 +1040,336 @@ MANDATORY WORKFLOW:
         step_timeout=900.0,
         task_type="nlp",
     ),
+    "mlebenchVesuvius": TaskProfile(
+        name="Vesuvius Challenge Ink Detection (MLE-bench)",
+        primary_metric="f05_score",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="ls data/train/1/surface_volume/*.tif 2>/dev/null | head -5; echo '---'; head -3 data/sample_submission.csv",
+        strategy_topic="binary segmentation of ink in 3D X-ray CT scans of ancient scrolls (predict RLE-encoded pixel masks, maximize F0.5 score)",
+        branch_write_instruction=(
+            "Write a complete train_and_predict.py, run it, then 'validate'.\n"
+            "Read baseline.py first for data layout.\n"
+            "Output your first command (cat baseline.py):"
+        ),
+        root_task_desc=(
+            "Vesuvius Challenge Ink Detection (MLE-bench).\n"
+            "Baseline f05_score: {baseline_score:.4f}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "TASK: Detect ink in 3D X-ray CT scans of ancient Herculaneum scroll fragments.\n"
+            "Files (all under data/ directory):\n"
+            "  data/train/1/surface_volume/ — 65 TIF slices (3D volume)\n"
+            "  data/train/1/inklabels.png  — ground truth binary mask\n"
+            "  data/train/1/mask.png       — valid region mask\n"
+            "  data/train/2/              — second fragment (same structure)\n"
+            "  data/test/a/surface_volume/ — test fragment slices\n"
+            "  data/test/a/mask.png       — valid region mask\n"
+            "  data/sample_submission.csv — format reference\n\n"
+            "Output: submission.csv with columns: Id, Predicted (RLE-encoded binary mask)\n"
+            "RLE format: space-delimited pairs of (start_pixel run_length), 1-indexed, left-to-right top-to-bottom\n\n"
+            "APPROACHES (in order of expected quality):\n"
+            "1. U-Net or ResNet encoder on 2.5D slices (stack of ~10 middle slices as channels)\n"
+            "2. 3D CNN on local volume patches\n"
+            "3. EfficientNet/ResNet feature extraction + pixel-wise classifier\n"
+            "4. Simple threshold on mean intensity (baseline, very poor)\n\n"
+            "PyTorch, torchvision are available. Build models from torch.nn (no smp).\n"
+            "GPU is available. START SIMPLE (threshold/sklearn), validate, then improve.\n\n"
+            "Write train_and_predict.py now (cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="""You are an ML engineering agent. Output ONLY ONE command per response. No explanations.
+
+TASK: Vesuvius Challenge Ink Detection. Maximize F0.5 score on binary ink segmentation.
+
+WORKSPACE:
+- data/train/1/surface_volume/  — 65 TIF slices of 3D X-ray CT volume (fragment 1)
+- data/train/1/inklabels.png    — ground truth binary ink mask
+- data/train/1/mask.png         — valid region mask
+- data/train/2/                 — fragment 2 (same structure)
+- data/test/a/surface_volume/   — test fragment slices
+- data/test/a/mask.png          — valid region mask
+- data/sample_submission.csv    — expected submission format
+- baseline.py                   — reference baseline
+
+COMMANDS:
+- cat baseline.py                    — read baseline
+- ls data/train/1/surface_volume/    — see available slices
+- cat << 'ENDOFFILE' > train_and_predict.py ... ENDOFFILE — write script
+- python train_and_predict.py — run training + prediction
+- validate                   — score submission.csv (F0.5)
+- ls, head, wc -l, sed -i    — file utilities
+
+OUTPUT: submission.csv with columns: Id, Predicted
+        Predicted = RLE-encoded binary mask (1-indexed, space-delimited start-length pairs)
+
+AVAILABLE PACKAGES (use ONLY these — do NOT pip install anything):
+- torch, torchvision (GPU available — use CUDA)
+- numpy, pandas, scipy, sklearn, PIL/Pillow
+DO NOT USE: segmentation_models_pytorch (broken), albumentations, cv2 (not installed)
+Build ALL models from scratch using torch.nn and torchvision only.
+
+STRATEGY — START SIMPLE, THEN IMPROVE:
+Phase 1 (MUST complete and validate first):
+  - Load middle ~10 TIF slices with PIL, compute mean intensity per pixel
+  - Simple threshold or sklearn classifier (RandomForest on patch features)
+  - Produce submission.csv with RLE encoding and run validate
+  - This gets a NON-ZERO baseline score
+Phase 2 (only after Phase 1 validates successfully):
+  - Replace with CNN using torchvision.models.resnet18(pretrained=True) as encoder
+  - Build decoder with torch.nn.ConvTranspose2d layers
+  - Train on 256x256 patches, predict on test, threshold, RLE-encode
+Phase 3: Data augmentation, longer training, ensemble
+
+CRITICAL RULES:
+1. ONE command per response
+2. Read baseline.py before writing new code
+3. ALWAYS produce submission.csv and validate BEFORE trying complex models
+4. submission.csv MUST have columns: Id, Predicted
+5. RLE encoding: 1-indexed, left-to-right top-to-bottom, pairs of (start, length)
+6. DO NOT pip install anything — use only pre-installed packages
+7. If code errors, SIMPLIFY — a working simple model beats a broken complex one
+8. A score of 0.01 is infinitely better than no score at all
+
+MANDATORY WORKFLOW:
+1. cat baseline.py   (understand data + format)
+2. Write SIMPLE train_and_predict.py (threshold or sklearn FIRST)
+3. python train_and_predict.py
+4. validate — MUST succeed before trying anything else
+5. Only THEN write more complex approaches""",
+        use_generic_conda=True,
+        needs_gpu=True,
+        step_timeout=1800.0,
+        task_type="vision",
+    ),
+    "mlebenchBMS": TaskProfile(
+        name="BMS Molecular Translation (MLE-bench)",
+        primary_metric="mean_levenshtein_distance",
+        higher_is_better=False,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="head -3 data/train_labels.csv 2>/dev/null; echo '---'; head -3 data/sample_submission.csv",
+        strategy_topic="image-to-sequence prediction of InChI chemical identifiers from molecule images (minimize mean Levenshtein distance)",
+        branch_write_instruction=(
+            "Write a complete train_and_predict.py, run it, then 'validate'.\n"
+            "Read baseline.py first for data layout.\n"
+            "Output your first command (cat baseline.py):"
+        ),
+        root_task_desc=(
+            "BMS Molecular Translation (MLE-bench).\n"
+            "Baseline mean_levenshtein_distance: {baseline_score:.4f}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "TASK: Predict InChI chemical identifier strings from molecule structure images.\n"
+            "Files:\n"
+            "  data/train_labels.csv          — image_id, InChI columns\n"
+            "  data/train/<nested>/image.png  — training images (triple-nested: id[0]/id[1]/id[2]/id.png)\n"
+            "  data/test/<nested>/image.png   — test images (same nesting)\n"
+            "  sample_submission.csv     — format reference\n"
+            "  data/extra_approved_InChIs.csv — reference InChI data\n\n"
+            "Output: submission.csv with columns: image_id, InChI\n\n"
+            "PROVEN APPROACH (scored 62.5, improve on it):\n"
+            "  ResNet50 encoder + LSTM decoder with attention, 150k-300k samples, 8-15 epochs,\n"
+            "  beam search decoding (width 5), MAX_SEQ_LENGTH=300, lr=1e-4\n"
+            "ALTERNATIVE APPROACHES:\n"
+            "  - Transformer decoder (better for long sequences)\n"
+            "  - EfficientNet-B3 encoder\n"
+            "  - BPE tokenization instead of character-level\n\n"
+            "PyTorch, torchvision available. GPU available. Training takes 20-40 min per run.\n\n"
+            "Write train_and_predict.py now (cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="""You are an ML engineering agent. Output ONLY ONE command per response. No explanations.
+
+TASK: BMS Molecular Translation. Minimize mean Levenshtein distance between predicted and true InChI strings.
+
+WORKSPACE:
+- data/train_labels.csv          — image_id, InChI columns (large dataset)
+- data/train/<nested>/image.png  — molecule images (nested: id[0]/id[1]/id[2]/id.png)
+- data/test/<nested>/image.png   — test molecule images (same nesting)
+- sample_submission.csv     — expected submission format
+- data/extra_approved_InChIs.csv — reference InChI data
+- baseline.py               — reference baseline
+
+COMMANDS:
+- cat baseline.py            — read baseline
+- head -5 data/train_labels.csv   — preview data
+- wc -l data/train_labels.csv     — count training samples
+- cat << 'ENDOFFILE' > train_and_predict.py ... ENDOFFILE — write script
+- python train_and_predict.py — run training + prediction
+- validate                   — score submission.csv (Levenshtein distance)
+- ls, head, wc -l, sed -i    — file utilities
+
+OUTPUT: submission.csv with columns: image_id, InChI
+        InChI = International Chemical Identifier string (e.g., "InChI=1S/C6H12O6/...")
+
+AVAILABLE PACKAGES:
+- torch, torchvision (GPU available — use CUDA)
+- numpy, pandas, scipy, sklearn, PIL/Pillow
+- cv2 (OpenCV)
+
+PROVEN APPROACH (ResNet + LSTM + Attention scored 62.5 — improve on this):
+1. CNN encoder: ResNet50 (pretrained) — extract 2048-dim features from molecule images
+2. Decoder: LSTM with attention over encoder features, character-level output
+3. Training data: use 150k-300k samples (more data = much better, 50k is too few)
+4. Epochs: train 8-15 epochs (3 epochs is too few — loss is still dropping)
+5. Beam search decoding (width 5) for inference — greedy decoding loses ~10-20 points
+6. MAX_SEQ_LENGTH = 300 (some InChI strings exceed 200 chars)
+7. Image size: 256x256, standard ImageNet normalization
+8. Batch size: 32-64 depending on GPU memory
+9. Learning rate: 1e-4 with ReduceLROnPlateau scheduler
+
+ALTERNATIVE APPROACHES TO EXPLORE:
+- Transformer decoder instead of LSTM (potentially better for long sequences)
+- EfficientNet-B3 encoder (more powerful features)
+- BPE or InChI-layer tokenization instead of character-level
+- Data augmentation: random rotation, contrast adjustment
+
+CRITICAL RULES:
+1. ONE command per response
+2. Read baseline.py before writing new code
+3. Always run python train_and_predict.py BEFORE validate
+4. submission.csv MUST have columns: image_id, InChI
+5. Predict for ALL test images — missing predictions get max distance
+6. Use GPU (torch.cuda) for training — CPU will be too slow
+7. DO NOT pip install anything — use only pre-installed packages
+8. ALWAYS produce a submission and validate before trying to improve
+
+MANDATORY WORKFLOW:
+1. cat baseline.py   (understand data + format)
+2. Write train_and_predict.py (use ResNet50 + LSTM + Attention)
+3. python train_and_predict.py (will take 20-40 min — this is normal)
+4. validate
+5. Iterate: more data, more epochs, beam search""",
+        use_generic_conda=True,
+        needs_gpu=True,
+        step_timeout=3600.0,
+        task_type="nlp",
+    ),
+    "mlebench3DDetection": TaskProfile(
+        name="3D Object Detection for Autonomous Vehicles (MLE-bench)",
+        primary_metric="mean_average_precision",
+        higher_is_better=True,
+        script_name="train_and_predict.py",
+        submission_file="submission.csv",
+        data_head_cmd="head -3 data/train.csv 2>/dev/null | cut -c1-120; echo '---'; head -3 data/sample_submission.csv",
+        strategy_topic="3D object detection from LiDAR point clouds (predict 3D bounding boxes, maximize mAP at IoU 0.5-0.95)",
+        branch_write_instruction=(
+            "Write a complete train_and_predict.py, run it, then 'validate'.\n"
+            "Read baseline.py first for data layout.\n"
+            "Output your first command (cat baseline.py):"
+        ),
+        root_task_desc=(
+            "3D Object Detection for Autonomous Vehicles (MLE-bench).\n"
+            "Baseline mean_average_precision: {baseline_score:.4f}\n\n"
+            "Data preview:\n{data_head}\n\n"
+            "TASK: Detect 3D objects (cars, pedestrians, etc.) from LiDAR point clouds.\n"
+            "Files:\n"
+            "  data/train.csv                — Id, PredictionString (ground truth bounding boxes)\n"
+            "  data/train_data/              — JSON metadata (log.json, sample.json, sample_data.json, etc.)\n"
+            "  data/train_images/            — JPEG camera images\n"
+            "  data/train_lidar/             — Binary LiDAR point clouds (.bin, 5 floats per point: x,y,z,intensity,ring)\n"
+            "  data/train_maps/              — Semantic map PNGs\n"
+            "  data/test_data/               — JSON metadata for test (no annotations)\n"
+            "  data/test_images/             — Test camera images\n"
+            "  data/test_lidar/              — Test LiDAR files\n"
+            "  data/test_maps/               — Test semantic maps\n"
+            "  data/sample_submission.csv    — format reference\n\n"
+            "Output: submission.csv with columns: Id, PredictionString\n"
+            "PredictionString format per object: confidence center_x center_y center_z width length height yaw class_name\n"
+            "9 object classes: animal, bicycle, bus, car, emergency_vehicle, motorcycle, other_vehicle, pedestrian, truck\n\n"
+            "APPROACHES (in order of expected quality):\n"
+            "1. PointPillars: voxelize LiDAR → 2D pseudo-image → 2D detection backbone\n"
+            "2. BEV (bird's eye view) projection of LiDAR → 2D detection\n"
+            "3. Simple heuristic: cluster LiDAR points, fit bounding boxes\n\n"
+            "PyTorch is available. GPU is available. Use it.\n\n"
+            "Write train_and_predict.py now (cat << 'ENDOFFILE' > train_and_predict.py):"
+        ),
+        system_prompt="""You are an ML engineering agent. Output ONLY ONE command per response. No explanations.
+
+TASK: 3D Object Detection for Autonomous Vehicles. Maximize mAP at IoU thresholds 0.5-0.95.
+
+WORKSPACE:
+- data/train.csv                — Id, PredictionString columns (bounding box annotations)
+- data/train_data/              — JSON metadata (log.json, sample.json, sample_data.json, etc.)
+- data/train_images/            — JPEG camera images
+- data/train_lidar/             — Binary LiDAR point clouds (.bin files)
+- data/train_maps/              — Semantic map PNGs
+- data/test_data/               — JSON metadata for test
+- data/test_images/, data/test_lidar/, data/test_maps/ — test data
+- data/sample_submission.csv    — expected submission format
+- baseline.py              — reference baseline
+
+COMMANDS:
+- cat baseline.py            — read baseline
+- head -3 train.csv          — preview annotations
+- python -c "import numpy as np; pc=np.fromfile('train_lidar/FILE.bin',dtype=np.float32).reshape(-1,5); print(pc.shape)" — inspect LiDAR
+- cat << 'ENDOFFILE' > train_and_predict.py ... ENDOFFILE — write script
+- python train_and_predict.py — run training + prediction
+- validate                   — score submission.csv (mAP)
+- ls, head, wc -l, sed -i    — file utilities
+
+OUTPUT: submission.csv with columns: Id, PredictionString
+        PredictionString = space-delimited: confidence center_x center_y center_z width length height yaw class_name
+        Multiple objects separated by spaces. Empty string = no detections.
+
+AVAILABLE PACKAGES:
+- torch, torchvision (GPU available — use CUDA)
+- numpy, pandas, scipy, sklearn
+- cv2 (OpenCV)
+
+LiDAR FORMAT:
+- Binary .bin files: np.fromfile(path, dtype=np.float32).reshape(-1, 5)
+- 5 channels: x, y, z, intensity, ring_index
+- Coordinate system: x=forward, y=left, z=up
+
+OBJECT CLASSES: animal, bicycle, bus, car, emergency_vehicle, motorcycle, other_vehicle, pedestrian, truck
+
+KEY STRATEGIES:
+1. PointPillars: discretize x-y plane into pillars → extract features → 2D detection head
+2. BEV approach: project points to bird's eye view image → 2D object detection
+3. Clustering: DBSCAN on LiDAR points → fit oriented bounding boxes per cluster
+4. Start with car-only detection, then extend to all classes
+
+CRITICAL RULES:
+1. ONE command per response
+2. Read baseline.py before writing new code
+3. Always run python train_and_predict.py BEFORE validate
+4. submission.csv MUST have columns: Id, PredictionString
+5. PredictionString: 9 tokens per object (confidence cx cy cz w l h yaw class_name)
+6. Use GPU (torch.cuda) for training if using neural approaches
+7. Map sample tokens from test_data/sample.json to match sample_submission.csv Ids
+
+MANDATORY WORKFLOW:
+1. cat baseline.py   (understand data + format)
+2. Write train_and_predict.py
+3. python train_and_predict.py
+4. validate""",
+        use_generic_conda=True,
+        needs_gpu=True,
+        step_timeout=1800.0,
+        task_type="vision",
+    ),
 }
+
+
+def _filter_torch_warning_spam(obs: str) -> str:
+    """Drop torch._dynamo / _inductor warning lines that drown out useful training output.
+
+    A single failed dynamo compile emits ~50 lines of `[rank0]:W ... _dynamo/convert_frame.py:1125]`
+    warnings. Multiple failed compile sites produce hundreds. With observation truncation
+    (head 2000 + tail 6000), the actual stdout (step counts, val_loss, save messages) gets
+    completely buried. This filter drops the noise so the agent can see what training did.
+    """
+    if not obs or ("_dynamo" not in obs and "WON'T CONVERT" not in obs):
+        return obs
+    kept = []
+    dropped = 0
+    for line in obs.splitlines():
+        if "_dynamo/" in line or "WON'T CONVERT" in line or "_inductor/lowering" in line:
+            dropped += 1
+            continue
+        kept.append(line)
+    if dropped > 0:
+        kept.append(f"[filtered {dropped} torch._dynamo/inductor warning lines]")
+    return "\n".join(kept)
 
 
 def get_task_profile(task_config: str) -> TaskProfile:
@@ -1315,7 +1670,14 @@ class ContainerManager:
                 )
                 print(f"  Package check: {check.strip()}")
             else:
-                print("RL task — skipping generic conda (task installs own deps)")
+                # RL tasks use mlgym_rl conda env baked into the container.
+                # Explicitly set PATH so python resolves to the conda env,
+                # even after container process restarts.
+                self.env.communicate(
+                    "export PATH=/home/agent/miniconda3/envs/mlgym_rl/bin:$PATH",
+                    timeout_duration=10,
+                )
+                print("RL task — activated mlgym_rl conda env")
 
             # cd into workspace
             self.env.communicate("cd /home/agent/workspace")
@@ -1413,6 +1775,7 @@ class ContainerManager:
             self._restore_eval_files()
         obs, reward, done, info = self.env.step(action)
         obs = obs or "Action executed."
+        obs = _filter_torch_warning_spam(obs)
         # If the container restarted (timeout/crash), shell functions are lost.
         # Reload commands, restore working directory, and re-activate conda env.
         if "RESTARTING PROCESS" in obs:
@@ -1431,7 +1794,15 @@ class ContainerManager:
     def save_snapshot(self, node_id: str) -> str:
         safe_id = node_id.replace("/", "_").replace(" ", "_")
         snap = f"/tmp/snap_{safe_id}.tar"
-        self.communicate(f"cd /home/agent && tar cf {snap} workspace")
+        # Exclude data/ directory from snapshots — it's immutable input data
+        # and can be very large (e.g. 20 GB for Vesuvius).  Also exclude
+        # common large cache dirs that don't need to be restored.
+        self.communicate(
+            f"cd /home/agent && tar cf {snap} --exclude='workspace/data' "
+            f"--exclude='workspace/.cache' --exclude='workspace/__pycache__' "
+            f"workspace",
+            timeout=120.0,
+        )
         return snap
 
     def restore_snapshot(self, snap_path: str):
@@ -1439,11 +1810,27 @@ class ContainerManager:
         # Using rm -rf workspace would delete the apptainer bind-mount point,
         # causing tar to extract into the tmpfs overlay instead of the bound
         # host directory — leaving the agent with an empty visible workspace.
+        # Preserve data/ since it was excluded from the snapshot.
         self.communicate(
-            "find /home/agent/workspace -mindepth 1 -delete 2>/dev/null || true"
+            "find /home/agent/workspace -mindepth 1 -not -path '*/data/*' "
+            "-not -path '*/data' -delete 2>/dev/null || true"
         )
-        self.communicate(f"cd /home/agent && tar xf {snap_path}")
+        self.communicate(f"cd /home/agent && tar xf {snap_path}", timeout=120.0)
         self.communicate("cd /home/agent/workspace")
+        # Re-activate conda env. After container process restarts (e.g. due to
+        # timeout/broken-pipe), the new shell loses the conda env that was set
+        # up during initial container creation. For RL tasks this means
+        # 'python src/train.py' fails with 'No module named numpy/jax'.
+        if self.task_profile and not self.task_profile.use_generic_conda:
+            self.communicate(
+                "export PATH=/home/agent/miniconda3/envs/mlgym_rl/bin:$PATH",
+                timeout=10,
+            )
+        elif self.task_profile and self.task_profile.use_generic_conda:
+            self.communicate(
+                "export PATH=/home/agent/miniconda3/envs/mlgym_generic/bin:$PATH",
+                timeout=10,
+            )
         self.env.current_step = 0  # reset step counter
 
     def close(self):
@@ -1461,14 +1848,22 @@ class LLMClient:
         import os
         # Detect Claude models → use ANTHROPIC_API_KEY and Anthropic's
         # OpenAI-compatible endpoint
-        if "claude" in model.lower():
+        model_lower = model.lower()
+        if "claude" in model_lower:
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
             base_url = base_url or "https://api.anthropic.com/v1/"
+        elif "gemini" in model_lower:
+            # Gemini OpenAI-compatible endpoint
+            # Support per-job key via GEMINI_API_KEY_OVERRIDE env (set by SLURM script)
+            api_key = (os.environ.get("GEMINI_API_KEY_OVERRIDE")
+                       or os.environ.get("GEMINI_API_KEY")
+                       or os.environ.get("GOOGLE_API_KEY", ""))
+            base_url = base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
         else:
             api_key = os.environ.get("OPENAI_API_KEY", "local")
         kwargs = {"api_key": api_key}
         # Skip explicit base_url for OpenAI (use default — avoids connection issues on some clusters)
-        # Always set base_url for Anthropic and local vLLM
+        # Always set base_url for Anthropic, Gemini, and local vLLM
         if base_url and "openai.com" not in base_url:
             kwargs["base_url"] = base_url
         self.client = OpenAI(**kwargs)
@@ -1480,7 +1875,7 @@ class LLMClient:
         is_reasoning = any(t in self.model for t in ("o1", "o3", "o4"))
         is_claude = "claude" in self.model.lower()
         token_key = "max_completion_tokens" if is_reasoning or "gpt-5" in self.model else "max_tokens"
-        max_tokens = 16384 if is_reasoning else 4096
+        max_tokens = 16384 if is_reasoning else 8192
         # Claude: thinking budget is separate from output tokens — increase max.
         if self.thinking_budget > 0 and is_claude:
             max_tokens = max(max_tokens, self.thinking_budget + 8192)
