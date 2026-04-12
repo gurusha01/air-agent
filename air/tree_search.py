@@ -34,6 +34,18 @@ from openai import OpenAI
 
 from mlgym.environment.env import EnvironmentArguments, MLGymEnv
 
+# Monkey-patch MLGymEnv.reset_container to re-populate workspace after crash.
+# Upstream reset_container() only respawns the apptainer but doesn't restore
+# starter code / datasets, causing cascading node failures on edit-tool hangs.
+_original_reset_container = MLGymEnv.reset_container
+
+def _patched_reset_container(self):
+    _original_reset_container(self)
+    if self.task is not None:
+        self._setup_workspace()
+
+MLGymEnv.reset_container = _patched_reset_container
+
 
 def generate_code_outline(host_path: str, max_lines: int = 200) -> str:
     """Return a compact outline of a Python file: class/def lines with line numbers.
