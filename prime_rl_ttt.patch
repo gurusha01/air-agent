@@ -1,0 +1,97 @@
+diff --git a/src/prime_rl/trainer/rl/config.py b/src/prime_rl/trainer/rl/config.py
+index 8a55bfce..2398c97a 100644
+--- a/src/prime_rl/trainer/rl/config.py
++++ b/src/prime_rl/trainer/rl/config.py
+@@ -54,6 +54,8 @@ class LossConfig(BaseConfig):
+     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
+     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
+     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
++    ent_coef: Annotated[float, Field(ge=0, description="Entropy bonus coefficient (subtracted from loss to encourage exploration).")] = 0.0
++    inner_steps: Annotated[int, Field(ge=1, description="Number of gradient updates per batch (like PPO epochs). >1 extracts more signal per expensive rollout batch.")] = 1
+ 
+     @model_validator(mode="after")
+     def validate_mask_bounds(self):
+diff --git a/src/prime_rl/trainer/rl/train.py b/src/prime_rl/trainer/rl/train.py
+index f9f0a7bd..6e0925c6 100644
+--- a/src/prime_rl/trainer/rl/train.py
++++ b/src/prime_rl/trainer/rl/train.py
+@@ -57,7 +57,11 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
+ from prime_rl.utils.monitor import setup_monitor
+ from prime_rl.utils.pydantic_config import parse_argv
+ from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+-from ring_flash_attn import substitute_hf_flash_attn
++try:
++    from ring_flash_attn import substitute_hf_flash_attn
++except ImportError:
++    def substitute_hf_flash_attn(*args, **kwargs):
++        raise RuntimeError("ring_flash_attn unavailable; cp must be disabled")
+ from torchtitan.distributed.utils import clip_grad_norm_
+ 
+ 
+@@ -402,6 +406,17 @@ def train(config: RLTrainerConfig):
+                 loss_scale=loss_scale,
+             )
+ 
++            # Entropy bonus: subtract ent_coef * mean(entropy[mask]) from loss.
++            # Encourages exploration when ent_coef > 0.
++            # Use logprobs-based entropy to avoid FusedOutputLinear backprop issue.
++            if getattr(config.loss, "ent_coef", 0.0) > 0.0:
++                # Compute entropy from logprobs: H = -sum(p * log(p)) ≈ -logprob (per-token approx)
++                # This avoids backprop through out["entropy"] which may not support gradients
++                # with FusedOutputLinear.
++                neg_logprobs = -out["logprobs"]
++                ent_approx = neg_logprobs[loss_mask].sum() / max(int(loss_mask.sum().item()), 1)
++                loss = loss - config.loss.ent_coef * ent_approx
++
+             # Backward pass
+             with maybe_record_function("backward"):
+                 loss.backward()
+@@ -441,6 +456,48 @@ def train(config: RLTrainerConfig):
+         optimizer.step()
+         optimizer.zero_grad()
+ 
++        # Multi-step: repeat forward/backward + optimizer on same batch
++        # for additional inner steps (like PPO epochs)
++        inner_steps = getattr(config.loss, "inner_steps", 1)
++        for inner_step in range(1, inner_steps):
++            logger.debug(f"Inner step {inner_step + 1}/{inner_steps}")
++            for micro_batch in micro_batches:
++                input_ids = micro_batch["input_ids"].to("cuda")
++                position_ids = micro_batch["position_ids"].to("cuda")
++                advantages = micro_batch["advantages"].to("cuda")
++                loss_mask = micro_batch["loss_mask"].to("cuda")
++                inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
++                labels = shift_tensor_left(input_ids)
++                temperatures = micro_batch["temperatures"].to("cuda")
++                if config.model.lora:
++                    set_lora_num_tokens(micro_batch["lora_num_tokens"].to("cuda"))
++                out = forward(model, input_ids, position_ids, labels=labels, temperature=temperatures)
++                if out.get("logprobs") is None:
++                    logits = out["logits"]
++                    scaled_logits = logits / temperatures.unsqueeze(-1)
++                    out["logprobs"] = selective_log_softmax(scaled_logits, labels)
++                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
++                out["logprobs"] = shift_tensor_right(
++                    out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
++                )
++                response_lengths = get_response_lengths(position_ids)
++                loss, _ = compute_loss(
++                    trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
++                    inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
++                    teacher_logprobs=None,
++                    advantages=advantages.squeeze().split(response_lengths),
++                    loss_mask=loss_mask.squeeze().split(response_lengths),
++                    loss_config=config.loss,
++                    loss_scale=loss_scale,
++                )
++                if getattr(config.loss, "ent_coef", 0.0) > 0.0 and "entropy" in out:
++                    ent_mean = out["entropy"][loss_mask].sum() / max(int(loss_mask.sum().item()), 1)
++                    loss = loss - config.loss.ent_coef * ent_mean
++                loss.backward()
++            clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled)
++            optimizer.step()
++            optimizer.zero_grad()
++
+         # Update learning rate scheduler
+         scheduler.step()
+ 
