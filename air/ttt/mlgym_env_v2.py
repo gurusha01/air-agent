@@ -914,7 +914,7 @@ class MLGymTreeEnvV2(vf.MultiTurnEnv):
         elif reward_scheme == "v12_individual":
             self._reward_obj = RewardV12Individual(
                 b=self._baseline_score,
-                N=64, q=80, warmup=8,
+                N=64, q=80, warmup=0,
                 batch_size=reward_batch_size,
                 task=self.task_name,
             )

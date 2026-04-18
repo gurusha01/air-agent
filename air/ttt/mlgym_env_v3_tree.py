@@ -55,8 +55,13 @@ class SharedTree:
       - Each rollout's setup_state clones the current shared tree as its starting state.
       - At rollout end, with probability ε, the rollout's newly-added nodes are merged
         into the shared tree (with renamed unique ids).
+      - Dedup: if a new node's strategy is too similar to an existing node (Jaccard > 0.6),
+        keep only the better-scoring one. This prevents the tree from filling with
+        near-identical experiments.
       - Shared tree grows monotonically; capped at max_size (no eviction, just skip merges).
     """
+
+    DEDUP_THRESHOLD = 0.6  # Jaccard similarity threshold for dedup
 
     def __init__(self, epsilon: float = 0.0, max_size: int = 500):
         self.epsilon = float(epsilon)
@@ -72,6 +77,41 @@ class SharedTree:
                 "score": None, "strategy": "", "code": None,
             }]
 
+    @staticmethod
+    def _strategy_tokens(strategy: str) -> set[str]:
+        """Extract meaningful tokens from a strategy string for similarity comparison."""
+        if not strategy:
+            return set()
+        # Remove common filler words, keep model names, techniques, numbers
+        stop = {"the", "a", "an", "on", "in", "to", "of", "and", "with", "for",
+                "using", "via", "from", "by", "is", "are", "be", "that", "this",
+                "what", "how", "why", "fine-tune", "finetune", "mnli", "bert",
+                "train", "training", "model", "base", "experiment"}
+        tokens = set()
+        for w in strategy.lower().replace("*", "").replace(",", " ").replace(".", " ").split():
+            w = w.strip("()[]{}:;\"'")
+            if len(w) > 1 and w not in stop:
+                tokens.add(w)
+        return tokens
+
+    def _find_similar(self, strategy: str) -> dict | None:
+        """Find an existing node with similar strategy (Jaccard > threshold).
+        Returns the similar node dict, or None. Must be called with lock held."""
+        new_tokens = self._strategy_tokens(strategy)
+        if not new_tokens:
+            return None
+        for node in self._tree:
+            if node["id"] == "root":
+                continue
+            existing_tokens = self._strategy_tokens(node.get("strategy", ""))
+            if not existing_tokens:
+                continue
+            intersection = len(new_tokens & existing_tokens)
+            union = len(new_tokens | existing_tokens)
+            if union > 0 and intersection / union > self.DEDUP_THRESHOLD:
+                return node
+        return None
+
     def get_seed(self) -> list[dict]:
         with self._lock:
             self._ensure_init()
@@ -83,7 +123,8 @@ class SharedTree:
             return len(self._tree)
 
     def maybe_merge(self, completed_tree: list[dict], baseline_size: int):
-        """With prob ε, merge new nodes (added after baseline_size) into shared tree."""
+        """With prob ε, merge new nodes (added after baseline_size) into shared tree.
+        Deduplicates: if a similar strategy exists, keeps the better-scoring one."""
         if self.epsilon <= 0 or len(completed_tree) <= baseline_size:
             return
         if random.random() >= self.epsilon:
@@ -96,6 +137,7 @@ class SharedTree:
             id_map: dict[str, str] = {}
             existing_ids = {n["id"] for n in self._tree}
             added = 0
+            deduped = 0
             for node in new_nodes:
                 pid = node.get("parent_id")
                 if pid in existing_ids:
@@ -104,6 +146,30 @@ class SharedTree:
                     resolved = id_map[pid]
                 else:
                     continue  # skip orphan
+
+                # Dedup: check if a similar strategy already exists
+                strategy = node.get("strategy", "")
+                new_score = node.get("score")
+                similar = self._find_similar(strategy)
+                if similar is not None:
+                    old_score = similar.get("score")
+                    # Keep the better-scoring one
+                    new_is_better = (
+                        new_score is not None and
+                        (old_score is None or new_score > old_score)
+                    )
+                    if new_is_better:
+                        # Replace existing with new (better score)
+                        similar["score"] = new_score
+                        similar["strategy"] = strategy[:200]
+                        similar["code"] = node.get("code")
+                        deduped += 1
+                    else:
+                        deduped += 1
+                    # Map the node id so children can still reference it
+                    id_map[node["id"]] = similar["id"]
+                    continue
+
                 new_id = f"m{self._merge_id}"
                 self._merge_id += 1
                 id_map[node["id"]] = new_id
@@ -113,7 +179,7 @@ class SharedTree:
                 self._tree.append(merged)
                 existing_ids.add(new_id)
                 added += 1
-            logger.info(f"[shared_tree] merged +{added}, total={len(self._tree)}")
+            logger.info(f"[shared_tree] merged +{added}, deduped {deduped}, total={len(self._tree)}")
 
 
 _SHARED_TREE = SharedTree(
@@ -180,7 +246,7 @@ TREE_V12_SYSTEM_PROMPT = """You are an ML research ADVISOR. You describe experim
 STRICTLY FORBIDDEN: code blocks, import statements, def/class, assignments, pseudocode.
 If your output contains ``` or `import ` or `def ` anywhere, it is INVALID.
 
-Given the experiment tree, propose ONE experiment. You must think deeply about what has been tried, what has NOT been tried, and where the most promising untapped potential lies.
+Given the experiment tree, propose ONE experiment with ONE focused change. You must think deeply about what has been tried, what has NOT been tried, and where the most promising untapped potential lies.
 
 Output format:
 
@@ -190,16 +256,17 @@ ANALYSIS:
  - What axes are MISSING or underexplored?
  - Which nodes show the most promise and why?
  - Which failed nodes reveal useful information (what went wrong, could it work with modifications)?
- - What is the current performance ceiling, and what type of change could break through it?>
+ - What is the current performance ceiling, and what type of change could break through it?
+ - IMPORTANT: If all children of a node score worse than the parent, that branch may be at its ceiling. Consider trying something fundamentally different instead of adding more complexity to it.>
 
 HYPOTHESIS:
 <State your scientific hypothesis: why do you believe this specific experiment will improve over the current best? What mechanism or principle are you leveraging? Be specific — "it might help" is not a hypothesis.>
 
 EXPERIMENT:
-<A thorough description of the experiment in 3-6 sentences. Structure it as:
- 1. WHAT: What specific change are you making? Name exact models (e.g. "bert-large-uncased", "microsoft/deberta-v3-base"), exact techniques (e.g. "focal loss with gamma=2", "label smoothing with alpha=0.1"), exact augmentation methods (e.g. "synonym replacement using WordNet with 20% probability per token").
- 2. HOW: How should the coder implement this? Describe the key modifications: which components to swap, which loss function to use, what preprocessing to add, what training schedule to follow. Be specific enough that two different coders would write similar code.
- 3. WHY: What do you expect to happen and what would success/failure tell us? E.g. "If focal loss improves accuracy on neutral examples specifically, it confirms the model struggles with the ambiguous middle class."
+<A thorough description of the experiment in 2-4 sentences. Structure it as:
+ 1. WHAT: What ONE specific change are you making? Name exact models (e.g. "bert-large-uncased", "microsoft/deberta-v3-base"), exact techniques (e.g. "focal loss with gamma=2", "label smoothing with alpha=0.1"), exact augmentation methods (e.g. "synonym replacement using WordNet with 20% probability per token").
+ 2. HOW: How should the coder implement this? Describe the key modification clearly. Be specific enough that two different coders would write similar code.
+ 3. WHY: What do you expect to happen and what would success/failure tell us?
 No code, but be as precise as a methods section in a research paper.>
 
 PARENT: <node_id of the primary parent to build on>
@@ -207,15 +274,17 @@ COMBINES: <comma-separated node_ids whose ideas you incorporate, or NONE>
 
 Rules:
 - No code in your output. Describe everything in precise English.
-- DIVERSITY: HP tuning is fine, but also explore: data (augmentation, preprocessing, sampling, relabeling), architecture (model swap like BERT-large/DeBERTa/ELECTRA, layer additions, pooling strategies, multi-head attention, classification head redesign), learning algorithm (focal loss, label smoothing, contrastive loss, knowledge distillation, curriculum learning), or combinations. If the tree is dominated by one axis, deliberately explore another.
-- EVOLVE: Build on high-scoring nodes by layering NEW ideas on top. Take a node that works well and add something it hasn't tried. Combine successful elements from different branches.
-- Failed nodes are valuable data — analyze WHY they failed and whether the core idea could work with a different implementation approach.
+- ONE CHANGE AT A TIME. Do NOT combine 3-4 techniques in one experiment. If you want to test contrastive loss, test ONLY contrastive loss. If you want to try BERT-large, try ONLY BERT-large with the same training recipe. This isolates what actually works and makes it easier for the coder to implement correctly.
+- DIVERSITY: HP tuning is fine, but also explore: data (augmentation, preprocessing, sampling, relabeling), architecture (model swap like BERT-large/DeBERTa/ELECTRA, layer additions, pooling strategies, multi-head attention, classification head redesign), learning algorithm (focal loss, label smoothing, contrastive loss, knowledge distillation, curriculum learning). If the tree is dominated by one axis, deliberately explore another.
+- EVOLVE: Build on high-scoring nodes by layering ONE new idea on top. Take a node that works well and change one thing about it.
+- If all children of a node score worse than it, STOP building on that node. Try a completely different parent or start from root with a new approach.
+- Failed nodes are valuable data — analyze WHY they failed and whether the core idea could work with a simpler implementation.
 """
 
 TREE_V12_INITIAL_PROMPT = """[ROLE INSTRUCTIONS]
-You are an ML research ADVISOR. You propose ONE experiment per turn. A separate coder executes it. You must NEVER write code (no ``` blocks, no import statements, no def/class).
+You are an ML research ADVISOR. You propose ONE experiment with ONE focused change per turn. A separate coder executes it. You must NEVER write code (no ``` blocks, no import statements, no def/class).
 
-Think like a scientist: analyze what has been tried, identify gaps, form a hypothesis, then propose a specific experiment.
+Think like a scientist: analyze what has been tried, identify gaps, form a hypothesis, then propose a specific experiment with ONE targeted change.
 
 Output format:
 
@@ -224,15 +293,16 @@ ANALYSIS:
  - What has been tried and what scores did they achieve?
  - What axes are MISSING or underexplored? (architecture changes? loss functions? data augmentation? regularization?)
  - Which high-scoring nodes could be improved further, and how?
- - What do the failures tell us?>
+ - What do the failures tell us?
+ - If all children of a node score worse, that branch may be at its ceiling.>
 
 HYPOTHESIS:
-<Your scientific hypothesis: why will this experiment improve performance? What mechanism are you leveraging?>
+<Your scientific hypothesis: why will this ONE change improve performance? What mechanism are you leveraging?>
 
 EXPERIMENT:
-<3-6 sentences describing the experiment thoroughly:
+<2-4 sentences describing ONE specific change thoroughly:
  1. WHAT: Exact change — name specific models, techniques, parameter values.
- 2. HOW: Key modifications the coder should make — which components to swap, what preprocessing to add, what training schedule to follow.
+ 2. HOW: Key modification the coder should make.
  3. WHY: Expected outcome and what success/failure reveals.
 No code, but be as precise as a methods section in a research paper.>
 
@@ -241,9 +311,11 @@ COMBINES: <comma-separated node_ids, or NONE>
 
 Rules:
 - No code. Describe everything in precise English.
-- DIVERSITY: HP tuning, architecture changes (bert-large-uncased, microsoft/deberta-v3-base, google/electra-base-discriminator), data augmentation (synonym replacement via WordNet, back-translation, token-level mixup), loss functions (focal loss with gamma=2, label smoothing alpha=0.1, supervised contrastive loss), regularization (R-drop, adversarial training with FGM, stochastic weight averaging), or combinations. Be specific — name exact HuggingFace model IDs, exact technique names, exact parameter values.
-- EVOLVE: Build on high-scoring nodes. Layer new ideas on top of what works. Combine successful elements from different branches.
-- Failed nodes are data — analyze why they failed and whether the idea could work differently.
+- ONE CHANGE AT A TIME. Do NOT combine 3-4 techniques. Test a model swap OR a loss change OR an augmentation OR an HP change — not all at once. This isolates what works and the coder implements it correctly.
+- DIVERSITY: HP tuning, architecture changes (bert-large-uncased, microsoft/deberta-v3-base, google/electra-base-discriminator), data augmentation (synonym replacement via WordNet, back-translation), loss functions (focal loss, label smoothing, contrastive loss), regularization (R-drop, adversarial training, SWA). Explore what hasn't been tried.
+- EVOLVE: Build on high-scoring nodes by changing ONE thing about them.
+- If all children of a node score worse, abandon that branch. Try a new approach from root.
+- Failed nodes are data — analyze why they failed and whether a simpler version could work.
 
 [TASK]
 
