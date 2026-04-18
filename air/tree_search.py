@@ -1854,6 +1854,76 @@ class ContainerManager:
 # LLM Client
 # ---------------------------------------------------------------------------
 
+# ---- Token + cost tracking (module-level, thread-safe) --------------------
+# Approx pricing in USD per 1M tokens. Update as needed.
+_PRICING = {
+    # name-substring: (input_per_M, output_per_M)
+    "gemini-3-flash":    (0.30, 2.50),
+    "gemini-2.5-flash":  (0.30, 2.50),
+    "gemini-2.0-flash":  (0.10, 0.40),
+    "gemini-1.5-flash":  (0.075, 0.30),
+    "gemini-1.5-pro":    (1.25, 5.00),
+    "gpt-5-codex":       (1.25, 10.00),
+    "gpt-5":             (1.25, 10.00),
+    "gpt-4.1":           (2.00, 8.00),
+    "gpt-4o":            (2.50, 10.00),
+    "claude-sonnet":     (3.00, 15.00),
+    "claude-opus":       (15.00, 75.00),
+}
+
+
+def _price_for(model: str) -> tuple[float, float]:
+    ml = model.lower()
+    for key, (inp, out) in _PRICING.items():
+        if key in ml:
+            return inp, out
+    return 0.0, 0.0  # unknown → no cost
+
+
+class _UsageTracker:
+    def __init__(self, path: str = "/tmp/llm_usage.jsonl"):
+        import threading
+        self._lock = threading.Lock()
+        self.path = path
+        self.totals: dict[str, dict] = {}  # model -> {in, out, cost, calls}
+
+    def record(self, model: str, in_tok: int, out_tok: int):
+        in_rate, out_rate = _price_for(model)
+        cost = (in_tok / 1e6) * in_rate + (out_tok / 1e6) * out_rate
+        with self._lock:
+            d = self.totals.setdefault(model, {"in": 0, "out": 0, "cost": 0.0, "calls": 0})
+            d["in"] += in_tok
+            d["out"] += out_tok
+            d["cost"] += cost
+            d["calls"] += 1
+            # Append per-call record
+            try:
+                with open(self.path, "a") as f:
+                    import time as _t
+                    f.write(json.dumps({
+                        "ts": _t.strftime("%Y-%m-%d %H:%M:%S"),
+                        "model": model, "in_tok": in_tok, "out_tok": out_tok,
+                        "cost_usd": round(cost, 6),
+                        "cum_cost_usd": round(d["cost"], 4),
+                        "cum_calls": d["calls"],
+                    }) + "\n")
+            except Exception:
+                pass
+
+    def summary(self) -> str:
+        with self._lock:
+            lines = []
+            total_cost = 0.0
+            for m, d in sorted(self.totals.items()):
+                lines.append(f"  {m}: {d['calls']} calls, {d['in']:,} in, {d['out']:,} out, ${d['cost']:.4f}")
+                total_cost += d["cost"]
+            lines.append(f"  TOTAL: ${total_cost:.4f}")
+            return "\n".join(lines)
+
+
+_USAGE = _UsageTracker(os.environ.get("LLM_USAGE_LOG", "/tmp/llm_usage.jsonl"))
+
+
 class LLMClient:
     def __init__(self, base_url: str, model: str, temperature: float,
                  thinking_budget: int = 0):
@@ -1886,8 +1956,12 @@ class LLMClient:
     def chat(self, messages: list[dict], temperature: float | None = None) -> str:
         is_reasoning = any(t in self.model for t in ("o1", "o3", "o4"))
         is_claude = "claude" in self.model.lower()
+        is_gemini = "gemini" in self.model.lower()
+        is_gemini_thinking = is_gemini and ("2.5" in self.model or "3" in self.model)
         token_key = "max_completion_tokens" if is_reasoning or "gpt-5" in self.model else "max_tokens"
-        max_tokens = 16384 if is_reasoning else 8192
+        # Gemini 2.5+ is a thinking model: thinking tokens count against max_tokens,
+        # so give it enough room for thinking + output.
+        max_tokens = 16384 if (is_reasoning or is_gemini_thinking) else 8192
         # Claude: thinking budget is separate from output tokens — increase max.
         if self.thinking_budget > 0 and is_claude:
             max_tokens = max(max_tokens, self.thinking_budget + 8192)
@@ -1912,15 +1986,38 @@ class LLMClient:
             }
             kwargs.pop("temperature", None)
 
-        for attempt in range(3):
+        # Gemini 2.5+ is a thinking model; the OpenAI-compatible endpoint does
+        # not expose a reasoning_effort knob, so we just budget generous
+        # max_tokens (set above) and let Gemini manage thinking internally.
+
+        # Retry for up to 10 minutes. Each call has a 60s timeout.
+        # Rate-limit errors get longer backoff; timeouts/other errors get short backoff.
+        deadline = time.time() + 600  # 10 minutes
+        attempt = 0
+        while True:
             try:
-                resp = self.client.chat.completions.create(**kwargs)
+                resp = self.client.chat.completions.create(timeout=60, **kwargs)
+                # Track usage
+                try:
+                    u = getattr(resp, "usage", None)
+                    if u is not None:
+                        in_tok = getattr(u, "prompt_tokens", 0) or 0
+                        out_tok = getattr(u, "completion_tokens", 0) or 0
+                        _USAGE.record(self.model, in_tok, out_tok)
+                except Exception:
+                    pass
                 return resp.choices[0].message.content or ""
             except Exception as e:
-                if attempt < 2:
-                    time.sleep(2 ** (attempt + 1))
+                attempt += 1
+                if time.time() >= deadline:
+                    raise RuntimeError(f"LLM failed after {attempt} attempts over 10 min: {type(e).__name__}: {e}")
+                msg = str(e).lower()
+                is_rate = ("rate" in msg and "limit" in msg) or "429" in msg or "quota" in msg or "resource_exhausted" in msg
+                if is_rate:
+                    sleep_s = min(10 * (2 ** min(attempt, 5)), 300)
                 else:
-                    raise RuntimeError(f"LLM failed after 3 attempts: {type(e).__name__}: {e}")
+                    sleep_s = min(5, deadline - time.time())
+                time.sleep(max(sleep_s, 1))
 
     def generate_strategies(self, current_score: float, baseline_score: float,
                             previous_approach: str, n: int,

@@ -55,11 +55,23 @@ TASKS = {
     },
     "regression": {
         "task_config": "tasks/regressionKaggleHousePrice.yaml",
-        "container_image": os.environ.get("MLGYM_APPTAINER_IMAGE", "/scratch/jarnav/mlgym_sandbox"),
+        "container_image": os.environ.get("MLGYM_APPTAINER_IMAGE", "aigym/mlgym-agent:latest"),
     },
     "mountaincar": {
         "task_config": "tasks/rlMountainCarContinuous.yaml",
         "container_image": os.environ.get("MLGYM_RL_IMAGE", "/scratch/jarnav/mlgym_rl.sif"),
+    },
+    "fashionMnist": {
+        "task_config": "tasks/imageClassificationFMnist.yaml",
+        "container_image": os.environ.get("MLGYM_APPTAINER_IMAGE", "aigym/mlgym-agent:latest"),
+    },
+    "cifar10": {
+        "task_config": "tasks/imageClassificationCifar10.yaml",
+        "container_image": os.environ.get("MLGYM_APPTAINER_IMAGE", "aigym/mlgym-agent:latest"),
+    },
+    "mnli": {
+        "task_config": "tasks/naturalLanguageInferenceMNLI.yaml",
+        "container_image": os.environ.get("MLGYM_APPTAINER_IMAGE", "aigym/mlgym-agent:latest"),
     },
 }
 
@@ -76,25 +88,56 @@ def execute_in_container(
     executor_url: str,
     executor_model: str,
     max_actions: int = 15,
-) -> tuple[float | None, str]:
-    """Execute one proposal in an MLGym container. Returns (score, feedback_text)."""
+    parent_code: str | None = None,
+    parent_score: float | None = None,
+    **kwargs,
+) -> tuple[float | None, str, bool, str | None]:
+    """Execute one proposal in an MLGym container.
+
+    Returns (score, feedback_text, executor_fault, final_baseline_code).
+    If parent_code is provided, baseline.py is overwritten with it before the
+    executor runs, enabling incremental code-edits across tree nodes.
+    """
     container = None
+    # Round-robin assign a free GPU from MLGYM_ENV_GPUS (default "2,3,4,5")
+    # so each concurrent rollout gets its own device.
+    import threading as _threading
+    if not hasattr(execute_in_container, "_gpu_lock"):
+        execute_in_container._gpu_lock = _threading.Lock()
+        execute_in_container._gpu_idx = 0
+    _gpu_pool = [g.strip() for g in os.environ.get("MLGYM_ENV_GPUS", "2,3,4,5").split(",") if g.strip()]
+    with execute_in_container._gpu_lock:
+        env_gpu_choice = _gpu_pool[execute_in_container._gpu_idx % len(_gpu_pool)]
+        execute_in_container._gpu_idx += 1
     try:
         container = ContainerManager(
             task_config=task_config,
-            env_gpu="cpu",
+            env_gpu=env_gpu_choice,
             image_name=container_image,
             task_profile=task_profile,
         )
         container.create()
 
+        # Seed parent's code as the new baseline.py for incremental edits.
+        if parent_code:
+            try:
+                container.env.communicate(
+                    "cat > baseline.py <<'PARENT_CODE_EOF__9f3a__'\n"
+                    + parent_code.rstrip("\n")
+                    + "\nPARENT_CODE_EOF__9f3a__\n",
+                    timeout_duration=15,
+                )
+            except Exception:
+                pass
+
+        # gpt-5 series only allows temperature=1.0
+        _temp = 1.0 if "gpt-5" in (executor_model or "") else 0.9
         executor = LLMClient(
             base_url=executor_url,
             model=executor_model,
-            temperature=0.9,
+            temperature=_temp,
         )
 
-        # Build initial messages for executor
         data_head = ""
         if task_profile.data_head_cmd:
             try:
@@ -107,11 +150,72 @@ def execute_in_container(
             data_head=data_head,
         )
 
+        # Strong mandate: executor MUST implement the specified strategy faithfully.
+        # Without this, coder LLMs tend to collapse to safe HP tweaks (lr/epochs
+        # bumps) and ignore architectural / data / loss changes proposed by the
+        # scientist, producing zero-signal rollouts for GRPO.
+        mandate = (
+            "\n\n================ EXECUTION MANDATE ================\n"
+            "You MUST implement the SPECIFIC strategy above, not a generic "
+            "'improve the baseline'. For example:\n"
+            "- If the strategy names a different model (e.g. RoBERTa, BERT-large, "
+            "DistilBERT), SWAP `AutoModel.from_pretrained(...)` / the tokenizer "
+            "to that model. Do not keep bert-base-uncased.\n"
+            "- If the strategy names a loss function (focal, label-smoothing, "
+            "custom), REPLACE `outputs.loss` with the specified loss computation.\n"
+            "- If the strategy names a regularization / architectural addition "
+            "(dropout head, attention pooling, extra layers), ADD those modules "
+            "to the model forward pass.\n"
+            "- If the strategy names data augmentation (back-translation, synonym "
+            "replacement, label noise, mixup), ADD a preprocessing / sampling step "
+            "that applies it to the training set.\n"
+            "- If the strategy is purely a hyperparameter change (lr/batch/epochs), "
+            "apply only that change and nothing else.\n"
+            "A rollout that runs the UNMODIFIED baseline with just an lr or epoch "
+            "bump when the strategy asked for something else is a FAILED rollout. "
+            "Your job is implementation fidelity, not hyperparameter sweeping.\n"
+            "====================================================\n"
+        )
+        if parent_code:
+            ps = f"{parent_score:.4f}" if parent_score is not None else "unknown"
+            strategy_msg = (
+                f"The current `baseline.py` is the working solution from a prior attempt "
+                f"(score={ps}). Apply the following strategy as an INCREMENTAL EDIT to "
+                f"the existing `baseline.py` — preserve the parts that are working and "
+                f"modify only what the strategy requires.\n\n"
+                f"Strategy to apply: {proposal}"
+                f"{mandate}\n{task_profile.branch_write_instruction}"
+            )
+        else:
+            strategy_msg = (
+                f"Strategy to implement: {proposal}"
+                f"{mandate}\n{task_profile.branch_write_instruction}"
+            )
+
         messages = [
             {"role": "system", "content": task_profile.system_prompt},
             {"role": "user", "content": task_desc},
-            {"role": "user", "content": f"Strategy to try: {proposal}\n\n{task_profile.branch_write_instruction}"},
+            {"role": "user", "content": strategy_msg},
         ]
+
+        # Pre-extract strategy keywords for pre-validate faithfulness check.
+        # Scans the proposal for substantive ML nouns (models, loss fns, arch
+        # components, augmentation names). If NONE of these end up in baseline.py
+        # by the time the executor tries to validate, we intercept with a stern
+        # reminder ONCE and force another edit cycle.
+        def _extract_keywords(prop: str) -> list[str]:
+            p = (prop or "").lower()
+            cands = [
+                "roberta","deberta","distilbert","bert-large","bert-small","electra","albert",
+                "focal","label_smooth","label smooth","contrastive","cosine loss","multi-task",
+                "lstm","gru","attention pool","multi-head","gated attention",
+                "back-trans","back trans","synonym","mixup","cutout","augment","label noise",
+                "dynamic masking","teacher","distill","active learn","temperature-scaled",
+                "mixed precision","fp16","bf16",
+            ]
+            return [k for k in cands if k in p]
+        strategy_keywords = _extract_keywords(proposal)
+        warned_once = False
 
         score = None
         feedback_parts = []
@@ -131,6 +235,26 @@ def execute_in_container(
 
             if action.strip().lower() == "submit":
                 action = "validate"
+
+            # Faithfulness gate: if about to validate and the strategy keywords
+            # are not in baseline.py, inject a reminder instead (once).
+            if action.strip().lower() == "validate" and strategy_keywords and not warned_once:
+                try:
+                    cur = container.env.communicate("cat baseline.py", timeout_duration=15) or ""
+                except Exception:
+                    cur = ""
+                cur_l = cur.lower()
+                present = [k for k in strategy_keywords if k in cur_l]
+                if not present:
+                    warned_once = True
+                    messages.append({"role": "assistant", "content": raw})
+                    messages.append({"role": "user", "content": (
+                        f"HOLD — baseline.py does NOT contain any of the strategy keywords "
+                        f"{strategy_keywords}. You are about to validate without implementing the requested "
+                        f"strategy. First, edit baseline.py to actually implement it, then re-run training, "
+                        f"THEN validate. Do not validate yet."
+                    )})
+                    continue  # skip the actual validate
 
             obs, info = container.step(action)
             messages.append({"role": "assistant", "content": raw})
@@ -157,10 +281,20 @@ def execute_in_container(
                 feedback_parts.append("No score produced after max actions.")
 
         feedback = " | ".join(feedback_parts) if feedback_parts else f"Score: {score}"
-        return score, feedback
+
+        # Capture final baseline.py for child nodes to inherit.
+        final_code = None
+        try:
+            final_code = container.env.communicate("cat baseline.py", timeout_duration=15)
+            if isinstance(final_code, str) and len(final_code) > 200_000:
+                final_code = final_code[:200_000]
+        except Exception:
+            final_code = None
+
+        return score, feedback, False, final_code
 
     except Exception as e:
-        return None, f"Execution failed: {e}"
+        return None, f"Execution failed: {e}", True, None
     finally:
         if container and container.env:
             try:

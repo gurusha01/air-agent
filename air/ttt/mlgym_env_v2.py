@@ -197,7 +197,8 @@ def parse_memory(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _log_reward(scheme: str, reward: float, best, baseline, any_score, state, extra: dict | None = None):
-    log_dir = Path("/scratch/jarnav/rollout_logs")
+    import os as _os
+    log_dir = Path(_os.environ.get("ROLLOUT_LOG_DIR", "/scratch/jarnav/rollout_logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     import time
     entry = {
@@ -241,7 +242,8 @@ def _log_reward(scheme: str, reward: float, best, baseline, any_score, state, ex
 #                      semantics. Persisted to disk.
 # ---------------------------------------------------------------------------
 
-REWARD_STATE_DIR = Path("/scratch/jarnav/rollout_logs")
+import os as _os_top
+REWARD_STATE_DIR = Path(_os_top.environ.get("ROLLOUT_LOG_DIR", "/scratch/jarnav/rollout_logs"))
 
 
 def _episode_score(state) -> tuple[float | None, bool]:
@@ -494,6 +496,313 @@ class RewardV9Percentile:
         return r
 
 
+# -- v10 hybrid (percentile middle tier + global best_ever top tier) --------
+
+class RewardV10Hybrid:
+    __name__ = "v10_hybrid"
+    """Reward scheme combining v9 percentile bar with v8 global-best top tier.
+
+    Tiers (higher_is_better):
+      * fault             : -0.5
+      * s <= baseline     :  0.0
+      * baseline < s <= p75: 0.0   (below percentile threshold)
+      * p75 < s <= best_ever: 0.4  (middle tier)
+      * s > best_ever       : 1.0  (new global max)
+
+    best_ever is monotonic; grows only when a rollout score exceeds it.
+    """
+
+    def __init__(self, b: float, N: int, q: int, warmup: int, batch_size: int,
+                 task: str, persist_path: Path | None = None):
+        self.b = float(b)
+        self.N = int(N)
+        self.q = int(q)
+        self.warmup = int(warmup)
+        self.batch_size = int(batch_size)
+        self.task = task
+        self.window: deque[float] = deque(maxlen=self.N)
+        self._pending: list[float] = []
+        self._counter = 0
+        self._cached_p: float | None = None
+        self.best_ever = float(b)
+        import os as _os
+        _dir = Path(_os.environ.get("ROLLOUT_LOG_DIR", "/scratch/jarnav/rollout_logs"))
+        self.persist_path = persist_path or (_dir / f"reward_state_v10_{task}.json")
+        self._load()
+        self._recompute_threshold()
+
+    def _recompute_threshold(self):
+        if len(self.window) < self.warmup:
+            self._cached_p = self.b
+        else:
+            import numpy as np
+            self._cached_p = float(np.percentile(list(self.window), self.q))
+
+    def _load(self):
+        try:
+            if self.persist_path.exists():
+                with open(self.persist_path) as f:
+                    d = json.load(f)
+                w = d.get("window", [])
+                self.window = deque([float(x) for x in w[-self.N:]], maxlen=self.N)
+                self.best_ever = float(d.get("best_ever", self.b))
+                logger.info(f"[v10] loaded window={len(self.window)} best_ever={self.best_ever:.4f}")
+        except Exception as e:
+            logger.warning(f"[v10] could not load state: {e}")
+
+    def _save(self):
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.persist_path, "w") as f:
+                json.dump({"window": list(self.window), "best_ever": self.best_ever,
+                           "baseline": self.b, "N": self.N, "q": self.q,
+                           "warmup": self.warmup}, f)
+        except Exception as e:
+            logger.warning(f"[v10] could not save state: {e}")
+
+    def __call__(self, parser, completion, answer, state, **kwargs) -> float:
+        s, higher = _episode_score(state)
+        b = state.get("baseline_score", self.b)
+        p = self._cached_p if self._cached_p is not None else self.b
+        be = self.best_ever
+
+        if s is None:
+            r = -0.5
+        elif higher:
+            if s <= b:          r = 0.0
+            elif s <= p:        r = 0.2
+            elif s <= be:       r = 0.4
+            else:               r = 1.0
+        else:
+            if s >= b:          r = 0.0
+            elif s >= p:        r = 0.2
+            elif s >= be:       r = 0.4
+            else:               r = 1.0
+
+        if s is not None:
+            self._pending.append(s)
+        self._counter += 1
+        if self._counter >= self.batch_size:
+            for ps in self._pending:
+                self.window.append(ps)
+                if higher and ps > self.best_ever:
+                    self.best_ever = ps
+                elif not higher and ps < self.best_ever:
+                    self.best_ever = ps
+            self._pending = []
+            self._counter = 0
+            self._recompute_threshold()
+            self._save()
+
+        _log_reward("v10_hybrid", r, s, b, s is not None, state,
+                    extra={"p_threshold_snapshot": p,
+                           "best_ever_snapshot": be,
+                           "window_size": len(self.window),
+                           "pending_in_batch": len(self._pending)})
+        return r
+
+
+# -- v11 tiered (below-baseline penalty + stronger mid + best_ever top) ----
+
+class RewardV11Tiered:
+    __name__ = "v11_tiered"
+    """Reward scheme with below-baseline penalty and stronger mid-tier.
+
+    Tiers (higher_is_better):
+      * fault               : -0.5
+      * s < baseline        : -0.2   (regression penalty)
+      * baseline <= s <= p70:  0.0
+      * p70 < s < best_ever :  0.2
+      * s >= best_ever      :  1.0
+    """
+
+    def __init__(self, b: float, N: int, q: int, warmup: int, batch_size: int,
+                 task: str, persist_path: Path | None = None):
+        self.b = float(b)
+        self.N = int(N)
+        self.q = int(q)
+        self.warmup = int(warmup)
+        self.batch_size = int(batch_size)
+        self.task = task
+        self.window: deque[float] = deque(maxlen=self.N)
+        self._pending: list[float] = []
+        self._counter = 0
+        self._cached_p: float | None = None
+        self.best_ever = float(b)
+        import os as _os
+        _dir = Path(_os.environ.get("ROLLOUT_LOG_DIR", "/scratch/jarnav/rollout_logs"))
+        self.persist_path = persist_path or (_dir / f"reward_state_v11_{task}.json")
+        self._load()
+        self._recompute_threshold()
+
+    def _recompute_threshold(self):
+        if len(self.window) < self.warmup:
+            self._cached_p = self.b
+        else:
+            import numpy as np
+            self._cached_p = float(np.percentile(list(self.window), self.q))
+
+    def _load(self):
+        try:
+            if self.persist_path.exists():
+                with open(self.persist_path) as f:
+                    d = json.load(f)
+                w = d.get("window", [])
+                self.window = deque([float(x) for x in w[-self.N:]], maxlen=self.N)
+                self.best_ever = float(d.get("best_ever", self.b))
+                logger.info(f"[v11] loaded window={len(self.window)} best_ever={self.best_ever:.4f}")
+        except Exception as e:
+            logger.warning(f"[v11] could not load state: {e}")
+
+    def _save(self):
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.persist_path, "w") as f:
+                json.dump({"window": list(self.window), "best_ever": self.best_ever,
+                           "baseline": self.b, "N": self.N, "q": self.q,
+                           "warmup": self.warmup}, f)
+        except Exception as e:
+            logger.warning(f"[v11] could not save state: {e}")
+
+    def __call__(self, parser, completion, answer, state, **kwargs) -> float:
+        s, higher = _episode_score(state)
+        b = state.get("baseline_score", self.b)
+        p = self._cached_p if self._cached_p is not None else self.b
+        be = self.best_ever
+
+        if s is None:
+            r = -0.5
+        elif higher:
+            if s < b:           r = -0.2
+            elif s <= p:        r = 0.0
+            elif s < be:        r = 0.2
+            else:               r = 1.0
+        else:
+            if s > b:           r = -0.2
+            elif s >= p:        r = 0.0
+            elif s > be:        r = 0.2
+            else:               r = 1.0
+
+        if s is not None:
+            self._pending.append(s)
+        self._counter += 1
+        if self._counter >= self.batch_size:
+            for ps in self._pending:
+                self.window.append(ps)
+                if higher and ps > self.best_ever:
+                    self.best_ever = ps
+                elif not higher and ps < self.best_ever:
+                    self.best_ever = ps
+            self._pending = []
+            self._counter = 0
+            self._recompute_threshold()
+            self._save()
+
+        _log_reward("v11_tiered", r, s, b, s is not None, state,
+                    extra={"p_threshold_snapshot": p,
+                           "best_ever_snapshot": be,
+                           "window_size": len(self.window),
+                           "pending_in_batch": len(self._pending)})
+        return r
+
+
+# -- v12 individual (per-node reward, not tree-max) -------------------------
+
+class RewardV12Individual:
+    __name__ = "v12_individual"
+    """Per-node reward using state['last_score'], 4-tier with moving p70.
+
+    Tiers (higher_is_better):
+      * fault (code fails)   : -0.5
+      * s <= baseline        : -0.2
+      * baseline < s <= p80  :  0.0
+      * s > p80              :  1.0
+
+    No best_ever gate — the p80 threshold rises naturally as scores improve,
+    keeping the +1.0 reward meaningful throughout training.
+    """
+
+    def __init__(self, b: float, N: int, q: int, warmup: int, batch_size: int,
+                 task: str, persist_path: Path | None = None):
+        self.b = float(b)
+        self.N = int(N)
+        self.q = int(q)
+        self.warmup = int(warmup)
+        self.batch_size = int(batch_size)
+        self.task = task
+        self.window: deque[float] = deque(maxlen=self.N)
+        self._pending: list[float] = []
+        self._counter = 0
+        self._cached_p: float | None = None
+        import os as _os
+        _dir = Path(_os.environ.get("ROLLOUT_LOG_DIR", "/scratch/jarnav/rollout_logs"))
+        self.persist_path = persist_path or (_dir / f"reward_state_v12_{task}.json")
+        self._load()
+        self._recompute_threshold()
+
+    def _recompute_threshold(self):
+        if len(self.window) < self.warmup:
+            self._cached_p = self.b
+        else:
+            import numpy as np
+            self._cached_p = float(np.percentile(list(self.window), self.q))
+
+    def _load(self):
+        try:
+            if self.persist_path.exists():
+                with open(self.persist_path) as f:
+                    d = json.load(f)
+                w = d.get("window", [])
+                self.window = deque([float(x) for x in w[-self.N:]], maxlen=self.N)
+                logger.info(f"[v12] loaded window={len(self.window)}")
+        except Exception as e:
+            logger.warning(f"[v12] could not load state: {e}")
+
+    def _save(self):
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.persist_path, "w") as f:
+                json.dump({"window": list(self.window),
+                           "baseline": self.b, "N": self.N, "q": self.q,
+                           "warmup": self.warmup}, f)
+        except Exception as e:
+            logger.warning(f"[v12] could not save state: {e}")
+
+    def __call__(self, parser, completion, answer, state, **kwargs) -> float:
+        s = state.get("last_score")
+        higher = state.get("higher_is_better", True)
+        b = state.get("baseline_score", self.b)
+        p = self._cached_p if self._cached_p is not None else self.b
+
+        if s is None:
+            r = -0.5
+        elif higher:
+            if s <= b:          r = -0.2
+            elif s <= p:        r = 0.0
+            else:               r = 1.0
+        else:
+            if s >= b:          r = -0.2
+            elif s >= p:        r = 0.0
+            else:               r = 1.0
+
+        if s is not None:
+            self._pending.append(s)
+        self._counter += 1
+        if self._counter >= self.batch_size:
+            for ps in self._pending:
+                self.window.append(ps)
+            self._pending = []
+            self._counter = 0
+            self._recompute_threshold()
+            self._save()
+
+        _log_reward("v12_individual", r, s, b, s is not None, state,
+                    extra={"p_threshold_snapshot": p,
+                           "window_size": len(self.window),
+                           "pending_in_batch": len(self._pending)})
+        return r
+
+
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
@@ -594,6 +903,31 @@ class MLGymTreeEnvV2(vf.MultiTurnEnv):
                 task=self.task_name,
             )
             reward_callable = self._reward_obj
+        elif reward_scheme == "v11_tiered":
+            self._reward_obj = RewardV11Tiered(
+                b=self._baseline_score,
+                N=64, q=70, warmup=8,
+                batch_size=reward_batch_size,
+                task=self.task_name,
+            )
+            reward_callable = self._reward_obj
+        elif reward_scheme == "v12_individual":
+            self._reward_obj = RewardV12Individual(
+                b=self._baseline_score,
+                N=64, q=80, warmup=8,
+                batch_size=reward_batch_size,
+                task=self.task_name,
+            )
+            reward_callable = self._reward_obj
+        elif reward_scheme == "v10_hybrid":
+            # -0.5 fault / 0 s<=b / 0 baseline<s<=p75 / 0.4 p75<s<=best_ever / 1.0 s>best_ever
+            self._reward_obj = RewardV10Hybrid(
+                b=self._baseline_score,
+                N=64, q=75, warmup=8,
+                batch_size=reward_batch_size,
+                task=self.task_name,
+            )
+            reward_callable = self._reward_obj
         elif reward_scheme == "v8_percentile":
             # Legacy alias for old v8 percentile-based scheme → map to v9.
             logger.warning("reward_scheme='v8_percentile' is deprecated; use 'v9_percentile'")
@@ -680,8 +1014,8 @@ class MLGymTreeEnvV2(vf.MultiTurnEnv):
 
     def _log_rollout(self, state, direction, score, feedback, executor_fault, scientist_output):
         """Log every rollout to a JSONL file for analysis."""
-        import time
-        log_dir = Path("/scratch/jarnav/rollout_logs")
+        import time, os as _os
+        log_dir = Path(_os.environ.get("ROLLOUT_LOG_DIR", "/scratch/jarnav/rollout_logs"))
         log_dir.mkdir(parents=True, exist_ok=True)
         # Scheme-tagged log so v6/v7/v8 don't collide when running in parallel
         log_file = log_dir / f"{self.task_name}_{self.reward_scheme}_rollouts.jsonl"

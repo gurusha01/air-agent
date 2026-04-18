@@ -20,9 +20,13 @@ untouched by this change.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
+import os
+import random
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -39,139 +43,385 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Tree archive for ε-persistence: keep each completed rollout's tree with
+# probability ε; at the start of a new rollout, seed state["tree"] from the
+# archive with probability ε. Rolling best_ever / p-threshold stay global.
+# ---------------------------------------------------------------------------
+
+class SharedTree:
+    """Single growing shared tree persisted across rollouts.
+
+    Flow:
+      - Each rollout's setup_state clones the current shared tree as its starting state.
+      - At rollout end, with probability ε, the rollout's newly-added nodes are merged
+        into the shared tree (with renamed unique ids).
+      - Shared tree grows monotonically; capped at max_size (no eviction, just skip merges).
+    """
+
+    def __init__(self, epsilon: float = 0.0, max_size: int = 500):
+        self.epsilon = float(epsilon)
+        self.max_size = int(max_size)
+        self._tree: list[dict] | None = None
+        self._merge_id = 0
+        self._lock = threading.Lock()
+
+    def _ensure_init(self):
+        if self._tree is None:
+            self._tree = [{
+                "id": "root", "parent_id": None, "depth": 0,
+                "score": None, "strategy": "", "code": None,
+            }]
+
+    def get_seed(self) -> list[dict]:
+        with self._lock:
+            self._ensure_init()
+            return copy.deepcopy(self._tree)
+
+    def size(self) -> int:
+        with self._lock:
+            self._ensure_init()
+            return len(self._tree)
+
+    def maybe_merge(self, completed_tree: list[dict], baseline_size: int):
+        """With prob ε, merge new nodes (added after baseline_size) into shared tree."""
+        if self.epsilon <= 0 or len(completed_tree) <= baseline_size:
+            return
+        if random.random() >= self.epsilon:
+            return
+        new_nodes = completed_tree[baseline_size:]
+        with self._lock:
+            self._ensure_init()
+            if len(self._tree) >= self.max_size:
+                return
+            id_map: dict[str, str] = {}
+            existing_ids = {n["id"] for n in self._tree}
+            added = 0
+            for node in new_nodes:
+                pid = node.get("parent_id")
+                if pid in existing_ids:
+                    resolved = pid
+                elif pid in id_map:
+                    resolved = id_map[pid]
+                else:
+                    continue  # skip orphan
+                new_id = f"m{self._merge_id}"
+                self._merge_id += 1
+                id_map[node["id"]] = new_id
+                merged = copy.deepcopy(node)
+                merged["id"] = new_id
+                merged["parent_id"] = resolved
+                self._tree.append(merged)
+                existing_ids.add(new_id)
+                added += 1
+            logger.info(f"[shared_tree] merged +{added}, total={len(self._tree)}")
+
+
+_SHARED_TREE = SharedTree(
+    epsilon=float(os.environ.get("TREE_ARCHIVE_EPSILON", "0.0")),
+    max_size=int(os.environ.get("TREE_ARCHIVE_MAX_SIZE", "500")),
+)
+
+
+# ---------------------------------------------------------------------------
 # Tree-aware scientist prompts — match the eval-time prompt format from
 # llm_guided_tree_search.py (simplified but keeps the STRATEGIES + PARENT
 # + MODE structure so train and eval are consistent).
 # ---------------------------------------------------------------------------
 
-TREE_SYSTEM_PROMPT = """You are a senior ML research scientist. You guide experiment design — you do NOT write code. A separate executor writes and runs the code based on your directions.
+TREE_SYSTEM_PROMPT = """You are an ML research ADVISOR. You describe experiments in plain English. A separate coder executes them. You must never write code.
 
-Your job: look at the experiment tree, decide what to try next, and give a high-level direction.
+STRICTLY FORBIDDEN in your output:
+- Any code block (no ```python, no ``` at all)
+- Any import statements, class definitions, function definitions, or assignments
+- Any executable syntax (no `=`, `def`, `import`, `for`, `if ... :`, `return`, etc.)
+- Pseudocode, step-by-step procedures that look like code
 
-IMPORTANT RULES:
-- Do NOT write code. Do NOT output python scripts. Only output the structured format below.
-- Each direction you give spawns a new node in the experiment tree.
-- You must choose which existing node to build on (PARENT field).
-- PARENT: root means start a fresh approach. PARENT: node_3 means refine node_3's approach.
+If your output contains ``` or `import ` or `def ` anywhere, it is INVALID and will be discarded.
 
-## Output Format (follow EXACTLY every turn)
+Given the experiment tree, propose 5 distinct strategies in natural-language sentences. One is sampled (by the given probabilities) and handed to the coder.
 
-REASONING:
-[1-3 sentences: what worked, what failed, what to try next]
-
-STRATEGIES:
-1. [idea] → PARENT: root — [why]
-2. [idea] → PARENT: node_1 — [why]
-3. [idea] → PARENT: root — [why]
-CHOSEN: [1/2/3] because [reason]
-
-DIRECTION:
-[What the executor should try. Be specific about the approach, hyperparameters, architecture choices. Do NOT write code — the executor handles implementation.]
-
-MODE: explore
-
-MEMORY:
-[One-sentence insight from results so far, or NONE if first turn.]
-
-## Example output (first turn, no prior results)
+Output EXACTLY this format:
 
 REASONING:
-No experiments yet. Start with a simple baseline to establish a reference point.
+<1-3 sentences in prose>
 
-STRATEGIES:
-1. Random Forest on flattened pixels → PARENT: root — simple, fast, establishes baseline
-2. Logistic Regression on raw pixels → PARENT: root — even simpler baseline
-3. Small CNN with 2 conv layers → PARENT: root — standard image approach
-CHOSEN: 1 because Random Forest is reliable and fast for a first experiment
+<response>
+<text><one English sentence describing a strategy. End with: "PARENT: <node_id>"></text>
+<probability><number between 0 and 1></probability>
+</response>
+<response>
+<text><another strategy>. PARENT: <node_id></text>
+<probability><number></probability>
+</response>
+... (five total <response> blocks)
 
-DIRECTION:
-Train a Random Forest classifier with 200 trees on the flattened 28x28 pixel features (784 dimensions). Use all 60000 training samples. Predict on the test set and save submission.csv.
+MODE: <explore or exploit>
 
-MODE: explore
+MEMORY: <one-sentence insight, or NONE>
 
-MEMORY: NONE
+Rules for strategies:
+- Each strategy is ONE English sentence, 15-40 words. No code, no bullet lists, no step numbering.
+- Vary across axes: data (augmentation, preprocessing, sampling, relabeling), architecture (model choice, layer additions, pooling, heads), learning algorithm (loss function, regularization, optimizer, schedule, distillation), or their combinations. Do NOT propose 5 variants of the same knob.
+- PARENT: root means fresh start. PARENT: <id> means build on node <id>.
+- Probabilities sum to ~1.0, spread across strategies, none > 0.6.
+- MODE: pick explore if the tree has few scored nodes or a promising branch is still shallow; pick exploit to refine the best known node.
 
-## Example output (later turn, with prior results)
+Example of a valid <response> text (no code):
+  "Replace the BERT-base encoder with a DistilBERT-base encoder and fine-tune with the same recipe, reducing latency and seeing if the smaller model regularizes. PARENT: root"
 
-REASONING:
-node_1 (Random Forest) scored 0.87. node_2 (Logistic Regression) scored 0.84. Tree-based methods work better on this data. node_3 (CNN) failed due to timeout. Should try gradient boosting which is stronger than RF.
+Example of an INVALID <response> text (contains code — do NOT do this):
+  "```python\\nmodel = AutoModel.from_pretrained(...)\\n```"
+"""
 
-STRATEGIES:
-1. XGBoost with tuned hyperparameters → PARENT: root — stronger tree method, new approach
-2. Random Forest with more trees and feature engineering → PARENT: node_1 — refine RF result
-3. LightGBM with histogram binning → PARENT: root — fast gradient boosting alternative
-CHOSEN: 2 because node_1 already works well and more trees + PCA might push it higher
+# ---- v12 prompts: single-experiment per episode ----------------------------
 
-DIRECTION:
-Build on node_1's Random Forest approach: increase to 500 trees, add PCA to reduce to 100 components before training, and use max_depth=20. Keep using all training samples.
+TREE_V12_SYSTEM_PROMPT = """You are an ML research ADVISOR. You describe experiments in plain English. A separate coder executes them. You must never write code.
 
-MODE: exploit
+STRICTLY FORBIDDEN: code blocks, import statements, def/class, assignments, pseudocode.
+If your output contains ``` or `import ` or `def ` anywhere, it is INVALID.
 
-MEMORY: RF=0.87 beats LR=0.84; tree methods work well on flattened pixels. CNN timed out — avoid for now."""
+Given the experiment tree, propose ONE experiment. You must think deeply about what has been tried, what has NOT been tried, and where the most promising untapped potential lies.
 
+Output format:
 
-TREE_INITIAL_PROMPT = """## Task
+ANALYSIS:
+<Analyze the tree thoroughly:
+ - What axes have been explored? (HP tuning, architecture, data augmentation, loss functions, regularization, etc.)
+ - What axes are MISSING or underexplored?
+ - Which nodes show the most promise and why?
+ - Which failed nodes reveal useful information (what went wrong, could it work with modifications)?
+ - What is the current performance ceiling, and what type of change could break through it?>
+
+HYPOTHESIS:
+<State your scientific hypothesis: why do you believe this specific experiment will improve over the current best? What mechanism or principle are you leveraging? Be specific — "it might help" is not a hypothesis.>
+
+EXPERIMENT:
+<A thorough description of the experiment in 3-6 sentences. Structure it as:
+ 1. WHAT: What specific change are you making? Name exact models (e.g. "bert-large-uncased", "microsoft/deberta-v3-base"), exact techniques (e.g. "focal loss with gamma=2", "label smoothing with alpha=0.1"), exact augmentation methods (e.g. "synonym replacement using WordNet with 20% probability per token").
+ 2. HOW: How should the coder implement this? Describe the key modifications: which components to swap, which loss function to use, what preprocessing to add, what training schedule to follow. Be specific enough that two different coders would write similar code.
+ 3. WHY: What do you expect to happen and what would success/failure tell us? E.g. "If focal loss improves accuracy on neutral examples specifically, it confirms the model struggles with the ambiguous middle class."
+No code, but be as precise as a methods section in a research paper.>
+
+PARENT: <node_id of the primary parent to build on>
+COMBINES: <comma-separated node_ids whose ideas you incorporate, or NONE>
+
+Rules:
+- No code in your output. Describe everything in precise English.
+- DIVERSITY: HP tuning is fine, but also explore: data (augmentation, preprocessing, sampling, relabeling), architecture (model swap like BERT-large/DeBERTa/ELECTRA, layer additions, pooling strategies, multi-head attention, classification head redesign), learning algorithm (focal loss, label smoothing, contrastive loss, knowledge distillation, curriculum learning), or combinations. If the tree is dominated by one axis, deliberately explore another.
+- EVOLVE: Build on high-scoring nodes by layering NEW ideas on top. Take a node that works well and add something it hasn't tried. Combine successful elements from different branches.
+- Failed nodes are valuable data — analyze WHY they failed and whether the core idea could work with a different implementation approach.
+"""
+
+TREE_V12_INITIAL_PROMPT = """[ROLE INSTRUCTIONS]
+You are an ML research ADVISOR. You propose ONE experiment per turn. A separate coder executes it. You must NEVER write code (no ``` blocks, no import statements, no def/class).
+
+Think like a scientist: analyze what has been tried, identify gaps, form a hypothesis, then propose a specific experiment.
+
+Output format:
+
+ANALYSIS:
+<Thorough analysis of the experiment tree:
+ - What has been tried and what scores did they achieve?
+ - What axes are MISSING or underexplored? (architecture changes? loss functions? data augmentation? regularization?)
+ - Which high-scoring nodes could be improved further, and how?
+ - What do the failures tell us?>
+
+HYPOTHESIS:
+<Your scientific hypothesis: why will this experiment improve performance? What mechanism are you leveraging?>
+
+EXPERIMENT:
+<3-6 sentences describing the experiment thoroughly:
+ 1. WHAT: Exact change — name specific models, techniques, parameter values.
+ 2. HOW: Key modifications the coder should make — which components to swap, what preprocessing to add, what training schedule to follow.
+ 3. WHY: Expected outcome and what success/failure reveals.
+No code, but be as precise as a methods section in a research paper.>
+
+PARENT: <node_id>
+COMBINES: <comma-separated node_ids, or NONE>
+
+Rules:
+- No code. Describe everything in precise English.
+- DIVERSITY: HP tuning, architecture changes (bert-large-uncased, microsoft/deberta-v3-base, google/electra-base-discriminator), data augmentation (synonym replacement via WordNet, back-translation, token-level mixup), loss functions (focal loss with gamma=2, label smoothing alpha=0.1, supervised contrastive loss), regularization (R-drop, adversarial training with FGM, stochastic weight averaging), or combinations. Be specific — name exact HuggingFace model IDs, exact technique names, exact parameter values.
+- EVOLVE: Build on high-scoring nodes. Layer new ideas on top of what works. Combine successful elements from different branches.
+- Failed nodes are data — analyze why they failed and whether the idea could work differently.
+
+[TASK]
 
 {task_description}
 
-## Task Details (what the executor sees)
+## Task Context
 
 {task_details}
 
-Metric: {metric_name} ({direction} is better)
-Baseline score: {baseline_score:.4f}
+Metric: {metric_name} ({direction} is better). Baseline: {baseline_score:.4f}.
 
-## Current Experiment Tree
+## Experiment Tree
+
+{tree_view}"""
+
+
+TREE_INITIAL_PROMPT = """[ROLE INSTRUCTIONS]
+You are an ML research ADVISOR. You describe experiments in plain English. A separate coder executes them. You must NEVER write code (no ``` blocks, no import statements, no def/class, no assignments).
+
+Propose 5 distinct strategies in natural-language sentences. One is sampled (by the given probabilities) and handed to the coder.
+
+Output EXACTLY this format:
+
+REASONING:
+<1-3 sentences in prose>
+
+<response>
+<text><one English sentence describing a strategy. End with: "PARENT: <node_id>"></text>
+<probability><number between 0 and 1></probability>
+</response>
+<response>
+<text><another strategy>. PARENT: <node_id></text>
+<probability><number></probability>
+</response>
+... (five total <response> blocks)
+
+MODE: <explore or exploit>
+
+MEMORY: <one-sentence insight, or NONE>
+
+Rules:
+- Each strategy is ONE English sentence, 15-40 words. No code. No bullet lists. No step numbering.
+- Vary across axes: data (augmentation, preprocessing, sampling, relabeling), architecture (model choice, layer additions, pooling, heads), learning algorithm (loss, regularization, optimizer, schedule, distillation), or combinations. Do NOT propose 5 variants of the same knob.
+- PARENT: root means fresh start. PARENT: <id> means build on node <id>.
+- Probabilities sum to ~1.0, spread across strategies, none > 0.6.
+- MODE: pick "explore" if the tree is shallow or unexplored; pick "exploit" to refine the best node.
+
+[TASK]
+
+{task_description}
+
+## Task Context
+
+{task_details}
+
+Metric: {metric_name} ({direction} is better). Baseline: {baseline_score:.4f}.
+
+## Experiment Tree
 
 {tree_view}
 
 ## Memory
 
-{memory}
-
-You have {budget_left} nodes remaining out of {total_budget} total.
-
-IMPORTANT: You are NOT the executor. Do NOT write code. Do NOT output python scripts.
-Instead, output your analysis and direction in this EXACT format:
-
-REASONING:
-[1-3 sentences analyzing the tree]
-
-STRATEGIES:
-1. [idea] → PARENT: root — [why]
-2. [idea] → PARENT: root — [why]
-3. [idea] → PARENT: root — [why]
-CHOSEN: [number] because [reason]
-
-DIRECTION:
-[What approach to try — describe the idea, not the code]
-
-MODE: explore
-
-MEMORY: NONE"""
+{memory}"""
 
 
-TREE_TURN_PROMPT = """## Result of Last Expansion
+TREE_TURN_PROMPT = """[REMINDER]
+You are the ADVISOR. Output plain-English strategies ONLY — no code, no ``` blocks, no imports.
+Format: REASONING / five <response>..</response> blocks with <text> and <probability> / MODE / MEMORY.
+
+## Last Result
 
 {result}
 
-## Current Experiment Tree
+## Experiment Tree
 
 {tree_view}
 
 ## Memory
 
-{memory}
-
-You have {budget_left} nodes remaining.
-
-Do NOT write code. Respond with REASONING, STRATEGIES (with PARENT: for each), CHOSEN, DIRECTION, MODE, MEMORY.
-TIP: To REFINE a promising node, set PARENT: to that node's ID (e.g. PARENT: root_0). To try something new, use PARENT: root."""
+{memory}"""
 
 
 # ---------------------------------------------------------------------------
 # Parsers (tree-aware)
 # ---------------------------------------------------------------------------
+
+def parse_verbalized_responses(text: str) -> list[tuple[str, float]]:
+    """Extract <response> blocks with <text> + <probability>. Tolerates loose
+    formatting: <text> tag optional (block content used as text if absent),
+    <probability> may appear immediately after </response> instead of inside.
+    Returns (text, prob) list; unparseable probs default to 0 (uniform fallback).
+    """
+    pairs: list[tuple[str, float]] = []
+    # Find all <response>...</response> blocks with their end positions so we can
+    # look for a trailing <probability> after </response>.
+    for m in re.finditer(r"<response>(.*?)</response>", text, re.DOTALL):
+        block = m.group(1)
+        # Prefer inner <text>...</text>; else use the whole block content.
+        tm = re.search(r"<text>(.*?)</text>", block, re.DOTALL)
+        txt = (tm.group(1) if tm else block).strip()
+        if not txt:
+            continue
+        # Try <probability> inside the block first.
+        pm = re.search(r"<probability>\s*([0-9.]+)\s*</probability>", block)
+        # If not inside, look in the ~200 chars right after </response>.
+        if pm is None:
+            tail = text[m.end(): m.end() + 200]
+            pm = re.search(r"<probability>\s*([0-9.]+)\s*</probability>", tail)
+        try:
+            prob = float(pm.group(1)) if pm else 0.0
+        except Exception:
+            prob = 0.0
+        pairs.append((txt, prob))
+    return pairs
+
+
+def sample_verbalized(pairs: list[tuple[str, float]]) -> str | None:
+    """Sample one response text proportional to probabilities. If probs are all
+    zero or missing, sample uniformly. Returns the chosen text, or None if no
+    valid responses were parsed."""
+    if not pairs:
+        return None
+    texts = [t for t, _ in pairs]
+    probs = [max(p, 0.0) for _, p in pairs]
+    total = sum(probs)
+    if total <= 0:
+        return random.choice(texts)
+    probs = [p / total for p in probs]
+    r = random.random()
+    cum = 0.0
+    for t, p in zip(texts, probs):
+        cum += p
+        if r < cum:
+            return t
+    return texts[-1]
+
+
+def parse_experiment_v12(text: str, valid_ids: set[str]) -> tuple[str, str, list[str]]:
+    """Parse v12 single-experiment output.
+
+    Returns (experiment_text, parent_id, combines_list).
+    """
+    # Extract EXPERIMENT: section (may be multi-sentence now)
+    em = re.search(r"EXPERIMENT:\s*(.*?)(?:\n(?:PARENT|COMBINES|MODE|MEMORY):|\Z)",
+                   text, re.DOTALL)
+    experiment = em.group(1).strip() if em else ""
+    # Fallback: if no EXPERIMENT section, use whole text
+    if not experiment or len(experiment) < 5:
+        # Try extracting from <response> blocks (backward compat)
+        pairs = parse_verbalized_responses(text)
+        if pairs:
+            experiment = pairs[0][0]
+        elif len(text.strip()) > 10:
+            experiment = text.strip()[:400]
+
+    # Extract PARENT:
+    pm = re.search(r"PARENT:\s*([A-Za-z0-9_]+(?:_\d+)*)", text)
+    parent_id = "root"
+    if pm:
+        pid = pm.group(1).strip()
+        if pid == "root" or pid in valid_ids:
+            parent_id = pid
+
+    # Extract COMBINES:
+    combines: list[str] = []
+    cm = re.search(r"COMBINES:\s*(.*?)(?:\n(?:MODE|MEMORY|PARENT|EXPERIMENT):|\Z)",
+                   text, re.DOTALL)
+    if cm:
+        raw = cm.group(1).strip()
+        if raw.upper() != "NONE" and raw:
+            for token in re.split(r"[,\s]+", raw):
+                token = token.strip()
+                if token in valid_ids and token != parent_id:
+                    combines.append(token)
+
+    return experiment, parent_id, combines
+
 
 def parse_direction_v3(text: str) -> str:
     """Extract DIRECTION section, stopping at MODE / MEMORY / EXECUTOR_GUIDANCE.
@@ -246,8 +496,10 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
     """
 
     def __init__(self, *args, **kwargs):
+        # Detect v12 mode from reward_scheme
+        self._v12_mode = kwargs.get("reward_scheme", "").startswith("v12")
         # Force tree-aware system prompt even if caller didn't specify.
-        kwargs["system_prompt"] = TREE_SYSTEM_PROMPT
+        kwargs["system_prompt"] = TREE_V12_SYSTEM_PROMPT if self._v12_mode else TREE_SYSTEM_PROMPT
         super().__init__(*args, **kwargs)
 
         # CRITICAL OFF-BY-ONE FIX: verifiers' MultiTurnEnv runs a loop like:
@@ -282,22 +534,61 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
                  for _ in range(len(self.eval_dataset))]
             )
 
-    def _format_initial_prompt(self) -> str:
+    def _format_initial_prompt(self, tree: list[dict] | None = None) -> str:
         tp = self.task_profile
         baseline = self._baseline_score
-        root_tree = [{"id": "root", "parent_id": None, "depth": 0,
+        if tree is None:
+            tree = [{"id": "root", "parent_id": None, "depth": 0,
                       "score": baseline, "strategy": "baseline (no experiment)"}]
-        return TREE_INITIAL_PROMPT.format(
+        template = TREE_V12_INITIAL_PROMPT if self._v12_mode else TREE_INITIAL_PROMPT
+        fmt_kwargs = dict(
             task_description=tp.name,
-            task_details=self.task_details,
+            task_details=self._scientist_task_blurb(),
             metric_name=tp.primary_metric,
             direction="higher" if tp.higher_is_better else "lower",
             baseline_score=baseline,
-            tree_view=self._format_tree(root_tree),
-            memory="No experiments run yet.",
-            budget_left=self.node_budget,
-            total_budget=self.node_budget,
+            tree_view=self._format_tree(tree),
         )
+        if not self._v12_mode:
+            fmt_kwargs["memory"] = "No experiments run yet."
+            fmt_kwargs["budget_left"] = self.node_budget
+            fmt_kwargs["total_budget"] = self.node_budget
+        return template.format(**fmt_kwargs)
+
+    def _scientist_task_blurb(self) -> str:
+        """Executor-facing task_details has lines like 'Output your first command
+        (cat baseline.py):' that confuse the scientist into emitting code.
+        Strip executor directives; keep the factual task context.
+        """
+        raw = (self.task_details or "").strip()
+        lines = raw.split("\n")
+        kept = []
+        bad_markers = (
+            "output your first command",
+            "output the first command",
+            "read baseline.py first",
+            "cat baseline.py",
+            "modify and train",
+            "modify baseline.py",
+            "then run ",
+            "then 'validate'",
+            "then validate",
+            "submission:",
+            "submission format",
+            "files:",
+        )
+        for ln in lines:
+            low = ln.lower().strip()
+            if not low:
+                kept.append(ln); continue
+            if any(m in low for m in bad_markers):
+                continue
+            kept.append(ln)
+        blurb = "\n".join(kept).strip()
+        # Remove any trailing colon lines (e.g., "Output your first command:")
+        while blurb.endswith(":"):
+            blurb = blurb.rsplit("\n", 1)[0].strip()
+        return blurb
 
     def _format_tree(self, tree: list[dict]) -> str:
         """Hierarchical rendering matching eval-time format.
@@ -368,24 +659,100 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
 
     async def setup_state(self, state: vf.State) -> vf.State:
         state = await super().setup_state(state)
-        # Ensure root carries parent_id/depth fields
-        if state.get("tree"):
-            state["tree"][0]["parent_id"] = None
-            state["tree"][0]["depth"] = 0
-        # Track child counters per node for hierarchical naming (root_0, root_0_0, etc.)
-        state["_child_counter"] = {}
+        # Seed this rollout's tree from the shared tree (which starts as [root]
+        # and grows as prior rollouts' subtrees get merged in with prob ε).
+        seed = _SHARED_TREE.get_seed()
+        state["tree"] = seed
+        state["_baseline_size"] = len(seed)  # nodes already present; rest are "new"
+        # Rebuild child_counter from seed so new ids don't collide within this rollout.
+        child_counter: dict[str, int] = {}
+        for n in seed:
+            pid = n.get("parent_id")
+            if pid is not None:
+                child_counter[pid] = child_counter.get(pid, 0) + 1
+        state["_child_counter"] = child_counter
+        state["node_counter"] = 0  # fresh budget of node_budget new nodes to add
+        if len(seed) > 1:
+            logger.info(f"[tree v3] Seeded from shared tree: {len(seed)} nodes")
+
+        # v12: update the initial prompt with the current shared tree so the
+        # scientist sees prior experiments on the very first (and only) turn.
+        if self._v12_mode and len(seed) > 1:
+            new_text = self._format_initial_prompt(tree=seed)
+            prompt = state["prompt"]
+            if isinstance(prompt, list):
+                for msg in prompt:
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        msg["content"] = new_text
+                        break
+
         return state
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
     ) -> vf.Messages:
         last_msg = messages[-1] if messages else None
-        raw_text = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+        if last_msg is None:
+            raw_text = ""
+        elif isinstance(last_msg, dict):
+            raw_text = last_msg.get("content", "") or ""
+        elif hasattr(last_msg, "content"):
+            raw_text = last_msg.content or ""
+        else:
+            raw_text = str(last_msg)
 
-        direction = parse_direction_v3(raw_text)
-        memory_update = parse_memory(raw_text)
+        # Debug dump: write the full scientist input+output to disk (rotating, keep last N)
+        try:
+            import os as _os
+            dump_dir = Path(_os.environ.get("ROLLOUT_LOG_DIR", "/tmp")) / "scientist_dumps"
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%H%M%S")
+            # Keep only last 20 dumps to cap disk
+            existing = sorted(dump_dir.glob("*.txt"))
+            for old in existing[:-19]:
+                try: old.unlink()
+                except Exception: pass
+            dump_path = dump_dir / f"scientist_{ts}_{len(existing):04d}.txt"
+            with open(dump_path, "w") as f:
+                f.write("=" * 80 + "\n")
+                f.write("INPUT MESSAGES TO SCIENTIST\n")
+                f.write("=" * 80 + "\n")
+                for i, m in enumerate(messages or []):
+                    if isinstance(m, dict):
+                        role = m.get("role", "?"); content = m.get("content", "")
+                    else:
+                        role = getattr(m, "role", "?"); content = getattr(m, "content", str(m))
+                    f.write(f"\n--- message {i} (role={role}) ---\n{content}\n")
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("SCIENTIST RAW OUTPUT\n")
+                f.write("=" * 80 + "\n")
+                f.write(raw_text + "\n")
+        except Exception as _e:
+            logger.warning(f"[tree v3] dump failed: {_e}")
+
         valid_ids = {n["id"] for n in state.get("tree", [])}
-        parent_id = parse_parent(raw_text, valid_ids)
+
+        if self._v12_mode:
+            # v12: single experiment with optional multi-parent
+            direction, parent_id, combines = parse_experiment_v12(raw_text, valid_ids)
+            # Store combines info for logging
+            state["_v12_combines"] = combines
+        else:
+            # Verbalized-sampling path: scientist emits <response> blocks with
+            # probabilities; sample one and use its <text> as the direction.
+            vs_pairs = parse_verbalized_responses(raw_text)
+            sampled_text = sample_verbalized(vs_pairs) if vs_pairs else None
+            if sampled_text:
+                direction = sampled_text
+                # Extract PARENT: from the sampled response's text
+                pm = re.search(r"PARENT:\s*([A-Za-z0-9_]+(?:_\d+)*)", sampled_text)
+                parent_id = pm.group(1) if (pm and (pm.group(1) == "root" or pm.group(1) in valid_ids)) else "root"
+            else:
+                # Fallback to legacy DIRECTION/STRATEGIES format
+                direction = parse_direction_v3(raw_text)
+                parent_id = parse_parent(raw_text, valid_ids)
+            combines = []
+        memory_update = parse_memory(raw_text)
 
         # Validate direction
         if not direction or len(direction.strip()) < 5:
@@ -393,7 +760,7 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
             state["executor_fault_count"] += 1
             tree_view = self._format_tree(state["tree"])
             memory = "\n".join(state.get("memory_lines", [])) or "No observations yet."
-            response = vf.UserMessage(
+            response = dict(role="user",
                 content=TREE_TURN_PROMPT.format(
                     result="Invalid direction. Please include DIRECTION: section.",
                     tree_view=tree_view,
@@ -412,13 +779,38 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
             f"{direction[:80]}..."
         )
 
+        # Look up parent's code & score so the executor can edit incrementally.
+        parent_node_lookup = next(
+            (n for n in state["tree"] if n["id"] == parent_id), None
+        )
+        parent_code = parent_node_lookup.get("code") if parent_node_lookup else None
+        parent_score = parent_node_lookup.get("score") if parent_node_lookup else None
+
+        # v12: if combining nodes, enrich the proposal with context from combined nodes
+        if combines:
+            combine_context = []
+            for cid in combines:
+                cnode = next((n for n in state["tree"] if n["id"] == cid), None)
+                if cnode:
+                    cs = cnode.get("score")
+                    cs_str = f"{cs:.4f}" if cs is not None else "FAILED"
+                    combine_context.append(
+                        f"  - {cid} (score={cs_str}): {(cnode.get('strategy') or '')[:150]}"
+                    )
+            if combine_context:
+                direction += (
+                    "\n\nADDITIONAL CONTEXT — ideas to incorporate from other nodes:\n"
+                    + "\n".join(combine_context)
+                )
+
         # Execute in container (retry once on fault)
         max_retries = 2
         score = None
         feedback = ""
         executor_fault = False
+        final_code = None
         for attempt in range(max_retries):
-            score, feedback, executor_fault = await asyncio.to_thread(
+            score, feedback, executor_fault, final_code = await asyncio.to_thread(
                 execute_in_container,
                 proposal=direction,
                 task_profile=self.task_profile,
@@ -428,6 +820,8 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
                 executor_model=self.executor_model,
                 max_actions=self.max_actions,
                 env_gpu=self.env_gpu,
+                parent_code=parent_code,
+                parent_score=parent_score,
             )
             if not executor_fault or score is not None:
                 break
@@ -456,6 +850,7 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
             "depth": new_depth,
             "score": score,
             "strategy": direction[:200],
+            "code": final_code,
         })
 
         if executor_fault:
@@ -480,7 +875,7 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
 
         tree_view = self._format_tree(state["tree"])
         memory = "\n".join(state.get("memory_lines", [])) or "No observations yet."
-        response = vf.UserMessage(
+        response = dict(role="user",
             content=TREE_TURN_PROMPT.format(
                 result=result,
                 tree_view=tree_view,
@@ -495,13 +890,21 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
         # (otherwise max_turns would stop one turn before the last execution).
         if state["node_counter"] >= self.node_budget:
             state["final_env_response"] = [response]
+            # With prob ε, merge this rollout's new nodes into the shared tree.
+            try:
+                _SHARED_TREE.maybe_merge(
+                    state.get("tree", []),
+                    baseline_size=state.get("_baseline_size", 1),
+                )
+            except Exception as e:
+                logger.warning(f"[shared_tree] maybe_merge failed: {e}")
             logger.info(f"[tree v3] Budget reached ({self.node_budget}), terminating episode")
 
         return [response]
 
     def _log_rollout_tree(self, state, direction, score, feedback, executor_fault,
                           scientist_output, parent_id):
-        log_dir = Path("/scratch/jarnav/rollout_logs")
+        log_dir = Path(os.environ.get("ROLLOUT_LOG_DIR", "/scratch/jarnav/rollout_logs"))
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"{self.task_name}_{self.reward_scheme}_tree_rollouts.jsonl"
         parent_depth = next(
@@ -524,13 +927,26 @@ class MLGymTreeEnvV3(MLGymTreeEnvV2):
             "direction": (direction or "")[:300],
             "tree_size": len(state.get("tree", [])),
         }
-        # Extract reasoning + strategies from the raw scientist output for debugging
-        reasoning_match = re.search(
-            r"REASONING:\s*\n(.*?)(?:\nSTRATEGIES:|\Z)",
+        # Extract reasoning/analysis + hypothesis from the raw scientist output
+        analysis_match = re.search(
+            r"ANALYSIS:\s*\n(.*?)(?:\n(?:HYPOTHESIS|EXPERIMENT|REASONING|STRATEGIES):|\Z)",
             scientist_output, re.DOTALL,
         )
-        if reasoning_match:
-            entry["scientist_reasoning"] = reasoning_match.group(1).strip()[:300]
+        if analysis_match:
+            entry["scientist_reasoning"] = analysis_match.group(1).strip()[:500]
+        else:
+            reasoning_match = re.search(
+                r"REASONING:\s*\n(.*?)(?:\nSTRATEGIES:|\nEXPERIMENT:|\Z)",
+                scientist_output, re.DOTALL,
+            )
+            if reasoning_match:
+                entry["scientist_reasoning"] = reasoning_match.group(1).strip()[:300]
+        hypothesis_match = re.search(
+            r"HYPOTHESIS:\s*\n(.*?)(?:\n(?:EXPERIMENT|PARENT):|\Z)",
+            scientist_output, re.DOTALL,
+        )
+        if hypothesis_match:
+            entry["scientist_hypothesis"] = hypothesis_match.group(1).strip()[:300]
         strategies_match = re.search(
             r"STRATEGIES:\s*\n(.*?)(?:\nCHOSEN:|\nDIRECTION:|\Z)",
             scientist_output, re.DOTALL,
